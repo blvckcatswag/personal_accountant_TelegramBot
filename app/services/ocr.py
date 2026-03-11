@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,8 +38,13 @@ class MockOCREngine:
 
 
 class GoogleVisionOCREngine:
-    def __init__(self, credentials_file: str | None = None) -> None:
+    def __init__(
+        self,
+        credentials_file: str | None = None,
+        credentials_json: str | None = None,
+    ) -> None:
         self.credentials_file = credentials_file
+        self.credentials_json = credentials_json
 
     async def extract(self, content: bytes, filename: str | None = None) -> OCRPayload:
         return await asyncio.to_thread(self._extract_sync, content)
@@ -53,11 +59,7 @@ class GoogleVisionOCREngine:
                 "Run `pip install .[dev]` or `pip install .`."
             ) from exc
 
-        credentials = None
-        if self.credentials_file:
-            credentials = service_account.Credentials.from_service_account_file(
-                self.credentials_file
-            )
+        credentials = self._build_credentials(service_account)
         client = vision.ImageAnnotatorClient(credentials=credentials)
         image = vision.Image(content=content)
         response = client.document_text_detection(image=image)
@@ -81,6 +83,17 @@ class GoogleVisionOCREngine:
             confidence=confidence,
             meta={"engine": "google_vision", "blocks": len(confidence_values)},
         )
+
+    def _build_credentials(self, service_account):
+        if self.credentials_json:
+            try:
+                credentials_info = json.loads(self.credentials_json)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON содержит невалидный JSON.") from exc
+            return service_account.Credentials.from_service_account_info(credentials_info)
+        if self.credentials_file:
+            return service_account.Credentials.from_service_account_file(self.credentials_file)
+        return None
 
 
 class ReceiptParser:
