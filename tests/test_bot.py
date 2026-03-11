@@ -49,7 +49,15 @@ class FakeReceiptService:
             items=[],
         )
 
-    async def create_manual_expense(self, *, session, user, amount, description: str, currency: str):
+    async def create_manual_expense(
+        self,
+        *,
+        session,
+        user,
+        amount,
+        description: str,
+        currency: str,
+    ):
         self.manual_calls.append(
             {
                 "session": session,
@@ -108,7 +116,7 @@ async def test_photo_in_budget_state_processed_as_receipt(monkeypatch: pytest.Mo
     async def fake_download_file(file_path: str):
         return BytesIO(b"image-bytes")
 
-    async def fake_call(self, request, timeout=None):
+    async def fake_call(self, request, **kwargs):
         if isinstance(request, SendMessage):
             requests.append(request)
         return None
@@ -166,7 +174,7 @@ async def test_start_command_shows_reply_keyboard(monkeypatch: pytest.MonkeyPatc
     bot = Bot("42:TEST")
     requests: list[SendMessage] = []
 
-    async def fake_call(self, request, timeout=None):
+    async def fake_call(self, request, **kwargs):
         if isinstance(request, SendMessage):
             requests.append(request)
         return None
@@ -219,7 +227,7 @@ async def test_manual_expense_flow_saves_expense(monkeypatch: pytest.MonkeyPatch
     bot = Bot("42:TEST")
     requests: list[SendMessage] = []
 
-    async def fake_call(self, request, timeout=None):
+    async def fake_call(self, request, **kwargs):
         if isinstance(request, SendMessage):
             requests.append(request)
         return None
@@ -295,7 +303,7 @@ async def test_manual_expense_button_sets_state(monkeypatch: pytest.MonkeyPatch)
     dispatcher = create_dispatcher(FakeContainer(FakeReceiptService()))
     bot = Bot("42:TEST")
 
-    async def fake_call(self, request, timeout=None):
+    async def fake_call(self, request, **kwargs):
         return None
 
     monkeypatch.setattr(Bot, "__call__", fake_call)
