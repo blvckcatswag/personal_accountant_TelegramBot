@@ -146,8 +146,7 @@ class ReceiptParser:
 
     def _parse_date(self, lines: list[str]) -> datetime:
         for line in lines:
-            match = self.DATE_PATTERN.search(line)
-            if match:
+            for match in self.DATE_PATTERN.finditer(line):
                 parsed = self._parse_date_value(match.group("value"))
                 if parsed is not None:
                     return parsed
@@ -161,7 +160,10 @@ class ReceiptParser:
                 continue
         if re.match(r"\d{2}[./-]\d{2}[./-]\d{2}\b", value):
             normalized = value.replace("/", ".").replace("-", ".")
-            return datetime.strptime(normalized, "%d.%m.%y")
+            try:
+                return datetime.strptime(normalized, "%d.%m.%y")
+            except ValueError:
+                return None
         return None
 
     def _parse_total(self, lines: list[str]) -> Decimal:
@@ -229,14 +231,18 @@ class ReceiptParser:
 
     def _estimate_confidence(self, lines: list[str], items: list[ReceiptItemPayload]) -> float:
         score = 0.35
+        raw_text = "\n".join(lines)
         if self._parse_optional(self.STORE_PATTERN, lines):
             score += 0.2
         if self._parse_optional(self.INN_PATTERN, lines):
             score += 0.1
-        if self.DATE_PATTERN.search("\n".join(lines)):
+        if any(
+            self._parse_date_value(match.group("value")) is not None
+            for match in self.DATE_PATTERN.finditer(raw_text)
+        ):
             score += 0.15
         if items:
             score += min(0.2, len(items) * 0.03)
-        if self.TOTAL_PATTERN.search("\n".join(lines)):
+        if self.TOTAL_PATTERN.search(raw_text):
             score += 0.1
         return min(score, 0.98)
