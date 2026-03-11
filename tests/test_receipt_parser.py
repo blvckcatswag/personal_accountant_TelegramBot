@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 from app.services.ocr import ReceiptParser
@@ -20,3 +21,16 @@ def test_receipt_parser_extracts_basic_fields() -> None:
     assert len(receipt.items) == 2
     assert receipt.items[0].normalized_name.startswith("молоко")
 
+
+def test_receipt_parser_skips_phone_number_when_parsing_date() -> None:
+    raw_text = """
+    ТОВ "Сільпо-фуд"
+    Гаряча лінія: +38(050)95-88-03
+    11.03.2026 14:20
+    Сир  1 шт  159.00  159.00
+    СУМА 159.00
+    """
+    receipt = ReceiptParser().parse(raw_text, default_currency="UAH")
+
+    assert receipt.receipt_date == datetime(2026, 3, 11, 14, 20)
+    assert receipt.total_amount == Decimal("159.00")
