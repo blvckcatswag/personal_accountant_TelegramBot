@@ -1,60 +1,117 @@
-# ReceiptBot
+# Personal Accountant Bot
 
-Telegram-бот для учета расходов по фото чеков, с OCR-пайплайном, мультивалютностью, бюджетами, аналитикой и FastAPI API.
+Telegram бот для учета расходов по чекам.
 
-## Что реализовано
+Основная идея простая: пользователь отправляет фото чека в Telegram, бот распознает текст, сохраняет покупки, раскладывает их по категориям и потом показывает историю, статистику и прогресс по бюджетам.
 
-- `aiogram 3` бот с командами `/start`, `/help`, `/cancel`, `/stats`, `/history`, `/budget`, `/currency`, `/mydata`, `/deleteaccount`
-- асинхронный FastAPI backend с webhook endpoint и REST API
-- SQLAlchemy 2 async-модели для пользователей, чеков, позиций, категорий, бюджетов, уведомлений и курсов валют
-- OCR pipeline MVP: загрузка файла, mock OCR engine, парсер текста чека, дедупликация
-- категоризация по словарю и fuzzy matching
-- бюджеты и прогресс-бары
-- аналитика по категориям и магазинам, CSV экспорт
-- мультивалютность с NBU / ExchangeRate providers и кэшированием курсов
-- Celery skeleton для периодических задач
-- Railway / Docker / GitHub Actions конфигурация
-- базовые unit-тесты
+## Что умеет бот
 
-## Быстрый старт
+- принимать чек как фото, документ или текст
+- распознавать текст чека через Google Vision OCR
+- сохранять чек, позиции и общую сумму
+- определять валюту и пересчитывать сумму в базовую валюту пользователя
+- показывать последние чеки
+- считать статистику за неделю или месяц
+- сохранять бюджет на неделю или месяц
+- выгружать пользовательские данные в CSV
+- удалять все данные пользователя по команде
 
-```bash
-cp .env.example .env
-pip install .[dev]
-uvicorn app.main:create_app --factory --reload
+## Команды
+
+- `/start`
+- `/help`
+- `/cancel`
+- `/history`
+- `/stats week`
+- `/stats month`
+- `/budget`
+- `/currency UAH`
+- `/mydata`
+- `/deleteaccount`
+
+## Стек
+
+- Python 3.12+
+- aiogram 3
+- FastAPI
+- SQLAlchemy 2 async
+- PostgreSQL или SQLite
+- Redis
+- Google Vision OCR
+- Docker
+- Railway
+
+## Как запустить локально
+
+1. Скопируй `.env.example` в `.env`.
+2. Укажи в `.env` токен Telegram бота.
+3. Положи `gcloud_key.json` в корень проекта.
+4. Укажи в `.env`:
+
+```env
+OCR_ENGINE=google_vision
+GOOGLE_APPLICATION_CREDENTIALS=./gcloud_key.json
 ```
 
-Проверка health endpoint:
+5. Установи зависимости:
 
-```bash
-curl http://localhost:8000/api/v1/health
+```powershell
+python -m pip install .[dev]
 ```
 
-Для локального Telegram-бота без webhook:
+6. Запусти бота:
 
-```bash
+```powershell
 python -m app.polling
 ```
 
-## Архитектура
+После запуска можно открыть бота в Telegram, нажать `/start` и отправить фото чека.
 
-- `app/main.py`: FastAPI app, lifespan, Telegram webhook
-- `app/bot.py`: команды и сценарии aiogram
-- `app/db.py`: async engine, ORM-модели
-- `app/repositories.py`: доступ к данным
-- `app/services/*`: OCR, категоризация, валюты, аналитика, бюджеты, storage
-- `app/tasks.py`: Celery beat/task skeleton
+## Локальная база
 
-## Локальная разработка
+Для простого локального запуска можно оставить SQLite.
 
-```bash
+Если нужен режим ближе к продакшену, можно поднять контейнеры:
+
+```powershell
 docker compose up --build
-ruff check .
-pytest
 ```
 
-## Ограничения текущего MVP
+## Railway
 
-- по умолчанию используется `MockOCREngine`, поэтому реальное распознавание фото надо подключать через внешний OCR provider
-- OCR fallback на GPT пока задан архитектурно, но не реализован как отдельный engine
-- уведомления и полноценные scheduled digests заведены как каркас Celery, без production-рассылки
+Для деплоя на Railway проекту нужны:
+
+- приложение с этим репозиторием
+- PostgreSQL
+- Redis
+- переменные окружения для Telegram и Google Vision
+
+Основная точка входа для приложения:
+
+`uvicorn app.main:create_app --factory --host 0.0.0.0 --port $PORT`
+
+## Полезные файлы
+
+- `app/main.py` - FastAPI приложение и Telegram webhook
+- `app/polling.py` - локальный запуск бота через polling
+- `app/bot.py` - Telegram handlers
+- `app/db.py` - модели и подключение к базе
+- `app/services/ocr.py` - OCR и парсинг чека
+- `app/services/currency.py` - курсы и конвертация валют
+- `app/services/analytics.py` - статистика и экспорт
+
+## Проверка
+
+```powershell
+ruff check .
+pytest tests
+```
+
+## Текущее состояние
+
+Это рабочий MVP-каркас. Базовые сценарии уже собраны, но проект еще можно усиливать дальше:
+
+- улучшать парсинг разных форматов чеков
+- добавлять более точную категоризацию
+- развивать уведомления и фоновые задачи
+- доводить деплой на Railway до полностью production-сценария
