@@ -34,3 +34,34 @@ def test_receipt_parser_skips_phone_number_when_parsing_date() -> None:
 
     assert receipt.receipt_date == datetime(2026, 3, 11, 14, 20)
     assert receipt.total_amount == Decimal("159.00")
+
+
+def test_receipt_parser_prefers_amount_due_over_cash_and_discount_lines() -> None:
+    raw_text = """
+    ТОВ <<НУМІС>>
+    Всього до знижки 79.60 грн.
+    Знижка 0.10 грн.
+    До сплати 79.50 грн.
+    ГОТІВКА 100.00 грн.
+    Сума 79.50
+    Решта -20.50 грн.
+    """
+    receipt = ReceiptParser().parse(raw_text, default_currency="UAH")
+
+    assert receipt.total_amount == Decimal("79.50")
+
+
+def test_receipt_parser_ignores_service_lines_in_fallback_items() -> None:
+    raw_text = """
+    ТОВ <<НУМІС>>
+    Шампунь La Ferm 19.90
+    Знижка 0.10 грн.
+    До сплати 79.50 грн.
+    ГОТІВКА 100.00 грн.
+    Доступно 1.10
+    A 19.90
+    """
+    receipt = ReceiptParser().parse(raw_text, default_currency="UAH")
+
+    assert [item.name for item in receipt.items] == ["Шампунь La Ferm"]
+    assert [item.total_price for item in receipt.items] == [Decimal("19.90")]

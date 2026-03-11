@@ -99,14 +99,67 @@ class GoogleVisionOCREngine:
 class ReceiptParser:
     STORE_PATTERN = re.compile(r"(магазин|store|shop)[:\s]+(?P<value>.+)", re.IGNORECASE)
     INN_PATTERN = re.compile(r"(инн|inn)[:\s]+(?P<value>[\w-]+)", re.IGNORECASE)
-    TOTAL_PATTERN = re.compile(r"(итого|сумма|total)[^\d]*(?P<value>\d+[.,]\d{2})", re.IGNORECASE)
+    TOTAL_PATTERN = re.compile(
+        r"(до\s*сплати|до\s*оплати|сума|сумма|разом|итого|всього|підсумок|пидсумок|total)"
+        r"[^\d-]*(?P<value>-?\d+[.,]\d{2})",
+        re.IGNORECASE,
+    )
     DATE_PATTERN = re.compile(
         r"(?P<value>\d{2}[./-]\d{2}[./-]\d{2,4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?)"
     )
+    MONEY_PATTERN = re.compile(r"-?\d+[.,]\d{2}")
     ITEM_PATTERN = re.compile(
         r"^(?P<name>.+?)\s{2,}(?P<qty>\d+(?:[.,]\d+)?)\s*(?P<unit>кг|г|л|мл|шт|pcs)?\s+"
         r"(?P<price>\d+(?:[.,]\d{2}))\s+(?P<total>\d+(?:[.,]\d{2}))$",
         re.IGNORECASE,
+    )
+    TOTAL_PRIORITY_KEYWORDS = (
+        ("до сплати", "до оплати", "amount due"),
+        ("сума", "сумма", "разом", "итого", "total"),
+        ("всього", "підсумок", "пидсумок"),
+    )
+    NON_FINAL_TOTAL_KEYWORDS = (
+        "зниж",
+        "скид",
+        "решта",
+        "сдач",
+        "готівк",
+        "налич",
+        "карта",
+        "картка",
+        "bonus",
+        "бонус",
+        "доступно",
+        "пдв",
+        "ндс",
+    )
+    SERVICE_LINE_KEYWORDS = (
+        "сума",
+        "сумма",
+        "до сплати",
+        "до оплати",
+        "разом",
+        "итого",
+        "всього",
+        "підсумок",
+        "пидсумок",
+        "зниж",
+        "скид",
+        "готівк",
+        "налич",
+        "решта",
+        "сдач",
+        "картка",
+        "карта",
+        "доступно",
+        "бонус",
+        "пдв",
+        "ндс",
+        "чек",
+        "касир",
+        "каса",
+        "номер",
+        "вн ут номер",
     )
 
     def parse(self, raw_text: str, *, default_currency: str) -> ParsedReceipt:
@@ -167,23 +220,34 @@ class ReceiptParser:
         return None
 
     def _parse_total(self, lines: list[str]) -> Decimal:
+        total_by_keywords = self._parse_total_by_keywords(lines)
+        if total_by_keywords is not None:
+            return total_by_keywords
         for line in reversed(lines):
             match = self.TOTAL_PATTERN.search(line)
             if match:
                 return Decimal(match.group("value").replace(",", "."))
         values: list[Decimal] = []
         for line in lines:
-            tokens = re.findall(r"\d+[.,]\d{2}", line)
-            values.extend(Decimal(token.replace(",", ".")) for token in tokens)
+            tokens = self.MONEY_PATTERN.findall(line)
+            values.extend(
+                Decimal(token.replace(",", "."))
+                for token in tokens
+                if Decimal(token.replace(",", ".")) > 0
+            )
         return max(values, default=Decimal("0"))
 
     def _parse_items(self, lines: list[str], currency: str) -> list[ReceiptItemPayload]:
         items: list[ReceiptItemPayload] = []
         for line in lines:
+            if self._is_service_line(line):
+                continue
             match = self.ITEM_PATTERN.match(line)
             if not match:
                 continue
             name = match.group("name").strip()
+            if not self._is_valid_fallback_name(name):
+                continue
             quantity = Decimal(match.group("qty").replace(",", "."))
             unit = match.group("unit") or "pcs"
             price = Decimal(match.group("price").replace(",", "."))
@@ -206,12 +270,14 @@ class ReceiptParser:
             return items
         fallback_items: list[ReceiptItemPayload] = []
         for line in lines:
-            tokens = re.findall(r"\d+[.,]\d{2}", line)
+            if self._is_service_line(line):
+                continue
+            tokens = self.MONEY_PATTERN.findall(line)
             if len(tokens) < 1 or len(line.split()) < 2:
                 continue
             total = Decimal(tokens[-1].replace(",", "."))
             name = re.sub(r"\d+[.,]\d{2}", "", line).strip(" -")
-            if not name:
+            if total <= 0 or not self._is_valid_fallback_name(name):
                 continue
             fallback_items.append(
                 ReceiptItemPayload(
@@ -246,3 +312,35 @@ class ReceiptParser:
         if self.TOTAL_PATTERN.search(raw_text):
             score += 0.1
         return min(score, 0.98)
+
+    def _parse_total_by_keywords(self, lines: list[str]) -> Decimal | None:
+        for keywords in self.TOTAL_PRIORITY_KEYWORDS:
+            for line in reversed(lines):
+                normalized = self._normalize_search_text(line)
+                if not any(keyword in normalized for keyword in keywords):
+                    continue
+                if any(keyword in normalized for keyword in self.NON_FINAL_TOTAL_KEYWORDS):
+                    continue
+                amount = self._extract_amount_from_line(line)
+                if amount is not None and amount > 0:
+                    return amount
+        return None
+
+    def _extract_amount_from_line(self, line: str) -> Decimal | None:
+        tokens = self.MONEY_PATTERN.findall(line)
+        if not tokens:
+            return None
+        return Decimal(tokens[-1].replace(",", "."))
+
+    def _is_service_line(self, line: str) -> bool:
+        normalized = self._normalize_search_text(line)
+        return any(keyword in normalized for keyword in self.SERVICE_LINE_KEYWORDS)
+
+    def _is_valid_fallback_name(self, name: str) -> bool:
+        normalized = normalize_item_name(name)
+        letters_only = re.sub(r"[^A-Za-zА-Яа-яІіЇїЄєҐґ]", "", normalized, flags=re.UNICODE)
+        return len(letters_only) >= 3
+
+    def _normalize_search_text(self, value: str) -> str:
+        normalized = re.sub(r"[^0-9A-Za-zА-Яа-яІіЇїЄєҐґ\s]", " ", value, flags=re.UNICODE)
+        return re.sub(r"\s+", " ", normalized).strip().lower()
