@@ -111,7 +111,10 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             )
             await session.commit()
         await state.clear()
-        await message.answer(f"Бюджет {amount} {container.settings.default_currency} на {period} сохранен.")
+        await message.answer(
+            f"Бюджет {amount} {container.settings.default_currency} "
+            f"на {period} сохранен."
+        )
 
     @router.message(Command("stats"))
     async def stats(message: Message) -> None:
@@ -126,7 +129,8 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             receipts = await ReceiptRepository(session).list_for_period(user.id, starts_at, ends_at)
             summary = container.analytics.build_summary(receipts)
         category_lines = [
-            f"{item.category}: {item.total} ({item.percentage:.1f}%)" for item in summary.by_category[:5]
+            f"{item.category}: {item.total} ({item.percentage:.1f}%)"
+            for item in summary.by_category[:5]
         ]
         await message.answer(
             f"Период: {period}\n"
@@ -147,7 +151,8 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             await message.answer("История пока пуста.")
             return
         lines = [
-            f"{receipt.receipt_date:%d.%m.%Y} | {receipt.store_name} | {receipt.converted_amount} {receipt.base_currency}"
+            f"{receipt.receipt_date:%d.%m.%Y} | {receipt.store_name} | "
+            f"{receipt.converted_amount} {receipt.base_currency}"
             for receipt in receipts
         ]
         await message.answer("\n".join(lines))

@@ -17,7 +17,12 @@ from app.repositories import (
 from app.services.analytics import AnalyticsService
 from app.services.budgets import BudgetService
 from app.services.categories import CategoryService
-from app.services.currency import CurrencyService, ExchangeRateApiProvider, NBURateProvider, StaticRateProvider
+from app.services.currency import (
+    CurrencyService,
+    ExchangeRateApiProvider,
+    NBURateProvider,
+    StaticRateProvider,
+)
 from app.services.ocr import GoogleVisionOCREngine, MockOCREngine, ReceiptParser
 from app.services.receipts import ReceiptProcessingService
 from app.services.storage import LocalStorageService, S3StorageService
@@ -30,7 +35,7 @@ class ServiceContainer:
     budgets: BudgetService
 
     @classmethod
-    def build(cls) -> "ServiceContainer":
+    def build(cls) -> ServiceContainer:
         return cls(settings=get_settings(), analytics=AnalyticsService(), budgets=BudgetService())
 
     def user_repo(self, session: AsyncSession) -> UserRepository:

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from typing import TYPE_CHECKING
 
-from app.db import Category
 from app.repositories import CategoryRepository, UserCategoryRuleRepository
+
+if TYPE_CHECKING:
+    from app.db import Category
 
 
 DEFAULT_CATEGORIES: list[dict[str, str]] = [
@@ -44,7 +47,11 @@ class CategoryMatch:
 
 
 class CategoryService:
-    def __init__(self, category_repo: CategoryRepository, rule_repo: UserCategoryRuleRepository) -> None:
+    def __init__(
+        self,
+        category_repo: CategoryRepository,
+        rule_repo: UserCategoryRuleRepository,
+    ) -> None:
         self.category_repo = category_repo
         self.rule_repo = rule_repo
 

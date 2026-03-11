@@ -45,12 +45,18 @@ class User(TimestampMixin, Base):
     plan: Mapped[str] = mapped_column(String(16), default=UserPlan.FREE.value)
     plan_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    receipts: Mapped[list["Receipt"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    budgets: Mapped[list["Budget"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    category_rules: Mapped[list["UserCategoryRule"]] = relationship(
+    receipts: Mapped[list[Receipt]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    budgets: Mapped[list[Budget]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    category_rules: Mapped[list[UserCategoryRule]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
-    notifications: Mapped[list["Notification"]] = relationship(
+    notifications: Mapped[list[Notification]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -64,8 +70,8 @@ class Category(TimestampMixin, Base):
     color: Mapped[str] = mapped_column(String(16), default="#3a7a57")
     is_system: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    items: Mapped[list["ReceiptItem"]] = relationship(back_populates="category")
-    budgets: Mapped[list["Budget"]] = relationship(back_populates="category")
+    items: Mapped[list[ReceiptItem]] = relationship(back_populates="category")
+    budgets: Mapped[list[Budget]] = relationship(back_populates="category")
 
 
 class Receipt(TimestampMixin, Base):
@@ -90,8 +96,11 @@ class Receipt(TimestampMixin, Base):
     raw_ocr_json: Mapped[dict] = mapped_column(JSON, default=dict)
     receipt_hash: Mapped[str] = mapped_column(String(64))
 
-    user: Mapped["User"] = relationship(back_populates="receipts")
-    items: Mapped[list["ReceiptItem"]] = relationship(back_populates="receipt", cascade="all, delete-orphan")
+    user: Mapped[User] = relationship(back_populates="receipts")
+    items: Mapped[list[ReceiptItem]] = relationship(
+        back_populates="receipt",
+        cascade="all, delete-orphan",
+    )
 
 
 class ReceiptItem(TimestampMixin, Base):
@@ -111,8 +120,8 @@ class ReceiptItem(TimestampMixin, Base):
     currency: Mapped[str] = mapped_column(String(3), default="UAH")
     confidence: Mapped[float] = mapped_column(default=0.0)
 
-    receipt: Mapped["Receipt"] = relationship(back_populates="items")
-    category: Mapped["Category | None"] = relationship(back_populates="items")
+    receipt: Mapped[Receipt] = relationship(back_populates="items")
+    category: Mapped[Category | None] = relationship(back_populates="items")
 
 
 class UserCategoryRule(TimestampMixin, Base):
@@ -124,7 +133,7 @@ class UserCategoryRule(TimestampMixin, Base):
     category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"))
     priority: Mapped[int] = mapped_column(default=100)
 
-    user: Mapped["User"] = relationship(back_populates="category_rules")
+    user: Mapped[User] = relationship(back_populates="category_rules")
 
 
 class Budget(TimestampMixin, Base):
@@ -140,8 +149,8 @@ class Budget(TimestampMixin, Base):
     notify_at_percent: Mapped[int] = mapped_column(default=80)
     carryover_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    user: Mapped["User"] = relationship(back_populates="budgets")
-    category: Mapped["Category | None"] = relationship(back_populates="budgets")
+    user: Mapped[User] = relationship(back_populates="budgets")
+    category: Mapped[Category | None] = relationship(back_populates="budgets")
 
 
 class Notification(TimestampMixin, Base):
@@ -155,7 +164,7 @@ class Notification(TimestampMixin, Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=NotificationStatus.PENDING.value)
 
-    user: Mapped["User"] = relationship(back_populates="notifications")
+    user: Mapped[User] = relationship(back_populates="notifications")
 
 
 class CurrencyRate(TimestampMixin, Base):

@@ -37,7 +37,11 @@ class AnalyticsService:
                 total=amount,
                 percentage=float((amount / total_amount) * 100) if total_amount else 0.0,
             )
-            for category, amount in sorted(by_category_raw.items(), key=lambda entry: entry[1], reverse=True)
+            for category, amount in sorted(
+                by_category_raw.items(),
+                key=lambda entry: entry[1],
+                reverse=True,
+            )
         ]
         by_store = sorted(by_store_raw.values(), key=lambda entry: entry["total"], reverse=True)
         return AnalyticsSummary(

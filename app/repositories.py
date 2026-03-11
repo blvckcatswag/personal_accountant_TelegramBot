@@ -8,14 +8,29 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db import Budget, Category, CurrencyRate, Notification, Receipt, ReceiptItem, User, UserCategoryRule
+from app.db import (
+    Budget,
+    Category,
+    CurrencyRate,
+    Notification,
+    Receipt,
+    ReceiptItem,
+    User,
+    UserCategoryRule,
+)
 
 
 class UserRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_or_create(self, telegram_id: int, username: str | None, language: str, currency: str) -> User:
+    async def get_or_create(
+        self,
+        telegram_id: int,
+        username: str | None,
+        language: str,
+        currency: str,
+    ) -> User:
         result = await self.session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
         if user:
@@ -49,7 +64,9 @@ class CategoryRepository:
         return list(result.scalars().all())
 
     async def by_name(self, name: str) -> Category | None:
-        result = await self.session.execute(select(Category).where(func.lower(Category.name) == name.lower()))
+        result = await self.session.execute(
+            select(Category).where(func.lower(Category.name) == name.lower())
+        )
         return result.scalar_one_or_none()
 
     async def ensure_many(self, categories: Iterable[dict[str, str]]) -> None:
@@ -67,13 +84,26 @@ class UserCategoryRuleRepository:
 
     async def list_for_user(self, user_id: int) -> list[UserCategoryRule]:
         result = await self.session.execute(
-            select(UserCategoryRule).where(UserCategoryRule.user_id == user_id).order_by(UserCategoryRule.priority)
+            select(UserCategoryRule)
+            .where(UserCategoryRule.user_id == user_id)
+            .order_by(UserCategoryRule.priority)
         )
         return list(result.scalars().all())
 
-    async def create(self, user_id: int, pattern: str, category_id: int, priority: int = 100) -> None:
+    async def create(
+        self,
+        user_id: int,
+        pattern: str,
+        category_id: int,
+        priority: int = 100,
+    ) -> None:
         self.session.add(
-            UserCategoryRule(user_id=user_id, pattern=pattern.lower().strip(), category_id=category_id, priority=priority)
+            UserCategoryRule(
+                user_id=user_id,
+                pattern=pattern.lower().strip(),
+                category_id=category_id,
+                priority=priority,
+            )
         )
         await self.session.flush()
 
@@ -146,7 +176,12 @@ class ReceiptRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_for_period(self, user_id: int, starts_at: datetime, ends_at: datetime) -> list[Receipt]:
+    async def list_for_period(
+        self,
+        user_id: int,
+        starts_at: datetime,
+        ends_at: datetime,
+    ) -> list[Receipt]:
         result = await self.session.execute(
             select(Receipt)
             .where(
@@ -193,7 +228,11 @@ class BudgetRepository:
     async def list_active(self, user_id: int, current_date: date) -> list[Budget]:
         result = await self.session.execute(
             select(Budget)
-            .where(Budget.user_id == user_id, Budget.starts_at <= current_date, Budget.ends_at >= current_date)
+            .where(
+                Budget.user_id == user_id,
+                Budget.starts_at <= current_date,
+                Budget.ends_at >= current_date,
+            )
             .options(selectinload(Budget.category))
         )
         return list(result.scalars().all())
@@ -203,7 +242,12 @@ class CurrencyRateRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_rate(self, from_currency: str, to_currency: str, rate_date: date) -> CurrencyRate | None:
+    async def get_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        rate_date: date,
+    ) -> CurrencyRate | None:
         result = await self.session.execute(
             select(CurrencyRate).where(
                 CurrencyRate.from_currency == from_currency,
@@ -243,7 +287,12 @@ class NotificationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def enqueue(self, user_id: int, notification_type: str, payload: dict) -> Notification:
+    async def enqueue(
+        self,
+        user_id: int,
+        notification_type: str,
+        payload: dict,
+    ) -> Notification:
         entity = Notification(user_id=user_id, type=notification_type, payload=payload)
         self.session.add(entity)
         await self.session.flush()

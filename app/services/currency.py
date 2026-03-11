@@ -28,14 +28,24 @@ STATIC_RATES: dict[tuple[str, str], Decimal] = {
 class RateProvider(Protocol):
     source_name: str
 
-    async def get_rate(self, from_currency: str, to_currency: str, rate_date: date) -> Decimal | None:
+    async def get_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        rate_date: date,
+    ) -> Decimal | None:
         ...
 
 
 class StaticRateProvider:
     source_name = "STATIC"
 
-    async def get_rate(self, from_currency: str, to_currency: str, rate_date: date) -> Decimal | None:
+    async def get_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        rate_date: date,
+    ) -> Decimal | None:
         if from_currency == to_currency:
             return Decimal("1")
         return STATIC_RATES.get((from_currency, to_currency))
@@ -47,10 +57,18 @@ class ExchangeRateApiProvider:
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
 
-    async def get_rate(self, from_currency: str, to_currency: str, rate_date: date) -> Decimal | None:
+    async def get_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        rate_date: date,
+    ) -> Decimal | None:
         if not self.api_key or httpx is None:
             return None
-        url = f"https://v6.exchangerate-api.com/v6/{self.api_key}/history/{from_currency}/{rate_date.isoformat()}"
+        url = (
+            f"https://v6.exchangerate-api.com/v6/"
+            f"{self.api_key}/history/{from_currency}/{rate_date.isoformat()}"
+        )
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(url)
             response.raise_for_status()
@@ -64,7 +82,12 @@ class ExchangeRateApiProvider:
 class NBURateProvider:
     source_name = "NBU"
 
-    async def get_rate(self, from_currency: str, to_currency: str, rate_date: date) -> Decimal | None:
+    async def get_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        rate_date: date,
+    ) -> Decimal | None:
         if "UAH" not in {from_currency, to_currency} or httpx is None:
             return None
         target = to_currency if from_currency == "UAH" else from_currency
@@ -83,7 +106,11 @@ class NBURateProvider:
 
 
 class CurrencyService:
-    def __init__(self, rate_repo: "CurrencyRateRepository", providers: list[RateProvider]) -> None:
+    def __init__(
+        self,
+        rate_repo: CurrencyRateRepository,
+        providers: list[RateProvider],
+    ) -> None:
         self.rate_repo = rate_repo
         self.providers = providers
 

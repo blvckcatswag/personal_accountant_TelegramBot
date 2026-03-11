@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from hashlib import sha256
-import re
 from typing import Protocol
 
 from app.schemas import ParsedReceipt, ReceiptItemPayload
@@ -49,12 +49,15 @@ class GoogleVisionOCREngine:
             from google.oauth2 import service_account
         except ModuleNotFoundError as exc:
             raise RuntimeError(
-                "Google Vision dependencies are missing. Run `pip install .[dev]` or `pip install .`."
+                "Google Vision dependencies are missing. "
+                "Run `pip install .[dev]` or `pip install .`."
             ) from exc
 
         credentials = None
         if self.credentials_file:
-            credentials = service_account.Credentials.from_service_account_file(self.credentials_file)
+            credentials = service_account.Credentials.from_service_account_file(
+                self.credentials_file
+            )
         client = vision.ImageAnnotatorClient(credentials=credentials)
         image = vision.Image(content=content)
         response = client.document_text_detection(image=image)
@@ -68,7 +71,11 @@ class GoogleVisionOCREngine:
                 block_confidence = getattr(block, "confidence", None)
                 if block_confidence is not None:
                     confidence_values.append(float(block_confidence))
-        confidence = sum(confidence_values) / len(confidence_values) if confidence_values else (0.9 if text else 0.0)
+        confidence = (
+            sum(confidence_values) / len(confidence_values)
+            if confidence_values
+            else (0.9 if text else 0.0)
+        )
         return OCRPayload(
             text=text,
             confidence=confidence,
@@ -97,9 +104,8 @@ class ReceiptParser:
         total_amount = self._parse_total(lines)
         items = self._parse_items(lines, default_currency)
         confidence = self._estimate_confidence(lines, items)
-        receipt_hash = sha256(
-            f"{receipt_date.isoformat()}|{store_inn or store_name}|{total_amount}".encode("utf-8")
-        ).hexdigest()
+        hash_payload = f"{receipt_date.isoformat()}|{store_inn or store_name}|{total_amount}"
+        receipt_hash = sha256(hash_payload.encode()).hexdigest()
         return ParsedReceipt(
             store_name=store_name,
             store_inn=store_inn,
