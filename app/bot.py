@@ -25,6 +25,58 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
 
+    async def process_receipt_message(message: Message) -> None:
+        if (message.text or "").startswith("/"):
+            return
+        if message.photo:
+            file = await message.bot.get_file(message.photo[-1].file_id)
+            file_buffer = await message.bot.download_file(file.file_path)
+            content = file_buffer.read()
+            filename = "receipt.jpg"
+        elif message.document:
+            file = await message.bot.get_file(message.document.file_id)
+            file_buffer = await message.bot.download_file(file.file_path)
+            content = file_buffer.read()
+            filename = message.document.file_name or "receipt.bin"
+        else:
+            content = (message.text or "").encode("utf-8")
+            filename = "receipt.txt"
+        await message.answer("Обрабатываю чек...")
+        async for session in _session_scope():
+            user_repo = container.user_repo(session)
+            user = await user_repo.get_or_create(
+                telegram_id=message.from_user.id,
+                username=message.from_user.username,
+                language=message.from_user.language_code or container.settings.default_language,
+                currency=container.settings.default_currency,
+            )
+            service = container.receipt_service(session)
+            try:
+                receipt = await service.process_upload(
+                    session=session,
+                    user=user,
+                    content=content,
+                    filename=filename,
+                )
+            except DuplicateReceiptError as exc:
+                await message.answer(str(exc))
+                return
+            except Exception as exc:
+                await session.rollback()
+                await message.answer(f"Не удалось обработать чек: {exc}")
+                return
+        lines = [
+            f"{item.name} -> {item.category_name}: {item.total_price} {item.currency}"
+            for item in receipt.items[:10]
+        ]
+        await message.answer(
+            f"Чек сохранен.\n"
+            f"{receipt.store_name}\n"
+            f"{receipt.converted_amount} {receipt.base_currency}\n"
+            f"OCR confidence: {receipt.ocr_confidence:.0%}\n"
+            + ("\n".join(lines) if lines else "Позиции не распознаны.")
+        )
+
     @router.message(Command("start"))
     async def start(message: Message) -> None:
         await message.answer(
@@ -73,7 +125,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         await state.set_state(BudgetStates.waiting_amount)
         await message.answer("Введите сумму бюджета, например `8000`.", parse_mode="Markdown")
 
-    @router.message(BudgetStates.waiting_amount)
+    @router.message(BudgetStates.waiting_amount, F.text & ~F.text.startswith("/"))
     async def budget_amount(message: Message, state: FSMContext) -> None:
         try:
             amount = Decimal((message.text or "").replace(",", "."))
@@ -84,7 +136,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         await state.set_state(BudgetStates.waiting_period)
         await message.answer("Введите период: WEEK или MONTH.")
 
-    @router.message(BudgetStates.waiting_period)
+    @router.message(BudgetStates.waiting_period, F.text & ~F.text.startswith("/"))
     async def budget_period(message: Message, state: FSMContext) -> None:
         period = (message.text or "").strip().upper()
         if period not in {"WEEK", "MONTH"}:
@@ -115,6 +167,12 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             f"Бюджет {amount} {container.settings.default_currency} "
             f"на {period} сохранен."
         )
+
+    @router.message(BudgetStates.waiting_amount, F.photo | F.document)
+    @router.message(BudgetStates.waiting_period, F.photo | F.document)
+    async def budget_media(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await process_receipt_message(message)
 
     @router.message(Command("stats"))
     async def stats(message: Message) -> None:
@@ -183,56 +241,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
 
     @router.message(F.photo | F.document | F.text)
     async def handle_receipt(message: Message) -> None:
-        if (message.text or "").startswith("/"):
-            return
-        if message.photo:
-            file = await message.bot.get_file(message.photo[-1].file_id)
-            file_buffer = await message.bot.download_file(file.file_path)
-            content = file_buffer.read()
-            filename = "receipt.jpg"
-        elif message.document:
-            file = await message.bot.get_file(message.document.file_id)
-            file_buffer = await message.bot.download_file(file.file_path)
-            content = file_buffer.read()
-            filename = message.document.file_name or "receipt.bin"
-        else:
-            content = (message.text or "").encode("utf-8")
-            filename = "receipt.txt"
-        await message.answer("Обрабатываю чек...")
-        async for session in _session_scope():
-            user_repo = container.user_repo(session)
-            user = await user_repo.get_or_create(
-                telegram_id=message.from_user.id,
-                username=message.from_user.username,
-                language=message.from_user.language_code or container.settings.default_language,
-                currency=container.settings.default_currency,
-            )
-            service = container.receipt_service(session)
-            try:
-                receipt = await service.process_upload(
-                    session=session,
-                    user=user,
-                    content=content,
-                    filename=filename,
-                )
-            except DuplicateReceiptError as exc:
-                await message.answer(str(exc))
-                return
-            except Exception as exc:
-                await session.rollback()
-                await message.answer(f"Не удалось обработать чек: {exc}")
-                return
-        lines = [
-            f"{item.name} -> {item.category_name}: {item.total_price} {item.currency}"
-            for item in receipt.items[:10]
-        ]
-        await message.answer(
-            f"Чек сохранен.\n"
-            f"{receipt.store_name}\n"
-            f"{receipt.converted_amount} {receipt.base_currency}\n"
-            f"OCR confidence: {receipt.ocr_confidence:.0%}\n"
-            + ("\n".join(lines) if lines else "Позиции не распознаны.")
-        )
+        await process_receipt_message(message)
 
     async def _session_scope():
         from app.db import SessionLocal
