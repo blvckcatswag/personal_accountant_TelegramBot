@@ -161,6 +161,7 @@ class ReceiptParser:
         "номер",
         "вн ут номер",
     )
+    CURRENCY_ONLY_NAMES = {"грн", "uah", "usd", "eur", "pln", "rub", "uah грн"}
 
     def parse(self, raw_text: str, *, default_currency: str) -> ParsedReceipt:
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
@@ -315,13 +316,16 @@ class ReceiptParser:
 
     def _parse_total_by_keywords(self, lines: list[str]) -> Decimal | None:
         for keywords in self.TOTAL_PRIORITY_KEYWORDS:
-            for line in reversed(lines):
+            for index in range(len(lines) - 1, -1, -1):
+                line = lines[index]
                 normalized = self._normalize_search_text(line)
                 if not any(keyword in normalized for keyword in keywords):
                     continue
                 if any(keyword in normalized for keyword in self.NON_FINAL_TOTAL_KEYWORDS):
                     continue
                 amount = self._extract_amount_from_line(line)
+                if amount is None:
+                    amount = self._extract_amount_from_neighbor_lines(lines, index)
                 if amount is not None and amount > 0:
                     return amount
         return None
@@ -338,8 +342,23 @@ class ReceiptParser:
 
     def _is_valid_fallback_name(self, name: str) -> bool:
         normalized = normalize_item_name(name)
+        if normalized in self.CURRENCY_ONLY_NAMES:
+            return False
         letters_only = re.sub(r"[^A-Za-zА-Яа-яІіЇїЄєҐґ]", "", normalized, flags=re.UNICODE)
         return len(letters_only) >= 3
+
+    def _extract_amount_from_neighbor_lines(self, lines: list[str], index: int) -> Decimal | None:
+        for offset in (1, 2):
+            next_index = index + offset
+            if next_index >= len(lines):
+                break
+            candidate_line = lines[next_index]
+            if self._is_service_line(candidate_line):
+                continue
+            amount = self._extract_amount_from_line(candidate_line)
+            if amount is not None and amount > 0:
+                return amount
+        return None
 
     def _normalize_search_text(self, value: str) -> str:
         normalized = re.sub(r"[^0-9A-Za-zА-Яа-яІіЇїЄєҐґ\s]", " ", value, flags=re.UNICODE)

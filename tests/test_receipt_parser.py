@@ -65,3 +65,16 @@ def test_receipt_parser_ignores_service_lines_in_fallback_items() -> None:
 
     assert [item.name for item in receipt.items] == ["Шампунь La Ferm"]
     assert [item.total_price for item in receipt.items] == [Decimal("19.90")]
+
+
+def test_receipt_parser_reads_amount_due_from_next_line() -> None:
+    raw_text = """
+    ТОВ "Сільпо-фуд"
+    ПІДСУМОК 768.44
+    ЗНИЖКА -101.44
+    ДО СПЛАТИ:
+    667.00 ГРН
+    """
+    receipt = ReceiptParser().parse(raw_text, default_currency="UAH")
+
+    assert receipt.total_amount == Decimal("667.00")

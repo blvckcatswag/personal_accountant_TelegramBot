@@ -45,71 +45,110 @@ class ReceiptProcessingService:
         *,
         session: AsyncSession,
         user: User,
-        amount: Decimal,
-        description: str,
+        amount: Decimal | None,
+        description: str | None,
         currency: str,
+        items: list[ReceiptItemPayload] | None = None,
     ) -> ReceiptView:
-        description = description.strip()
-        if not description:
+        description = (description or "").strip()
+        manual_items = items or []
+        if not manual_items and not description:
             raise ValueError("Укажите описание расхода.")
 
         receipt_date = datetime.utcnow()
-        normalized_name = normalize_item_name(description)
-        category_match = await self.category_service.categorize(
-            user_id=user.id,
-            normalized_name=normalized_name,
+        if not manual_items:
+            if amount is None:
+                raise ValueError("Укажите сумму расхода.")
+            normalized_name = normalize_item_name(description)
+            manual_items = [
+                ReceiptItemPayload(
+                    name=description,
+                    normalized_name=normalized_name,
+                    quantity=Decimal("1"),
+                    unit="pcs",
+                    price_per_unit=amount,
+                    total_price=amount,
+                    discount=Decimal("0"),
+                    currency=currency,
+                    category_name="Прочее",
+                    confidence=0.95,
+                )
+            ]
+
+        total_amount = amount if amount is not None else sum(
+            (item.total_price for item in manual_items),
+            Decimal("0"),
         )
+        if total_amount <= 0:
+            raise ValueError("Сумма расхода должна быть больше нуля.")
+
+        items_payload: list[dict] = []
+        response_items: list[ReceiptItemPayload] = []
+        for item in manual_items:
+            normalized_name = item.normalized_name or normalize_item_name(item.name)
+            category_match = await self.category_service.categorize(
+                user_id=user.id,
+                normalized_name=normalized_name,
+            )
+            item_payload = ReceiptItemPayload(
+                name=item.name,
+                normalized_name=normalized_name,
+                quantity=item.quantity,
+                unit=item.unit,
+                price_per_unit=item.price_per_unit,
+                total_price=item.total_price,
+                discount=item.discount,
+                currency=item.currency,
+                category_name=category_match.category.name,
+                confidence=max(item.confidence, category_match.confidence),
+            )
+            response_items.append(item_payload)
+            items_payload.append(
+                {
+                    "name": item_payload.name,
+                    "normalized_name": item_payload.normalized_name,
+                    "category_id": category_match.category.id,
+                    "quantity": item_payload.quantity,
+                    "unit": item_payload.unit,
+                    "price_per_unit": item_payload.price_per_unit,
+                    "total_price": item_payload.total_price,
+                    "discount": item_payload.discount,
+                    "currency": item_payload.currency,
+                    "confidence": item_payload.confidence,
+                }
+            )
+
         converted_amount, rate = await self.currency_service.convert(
-            amount,
+            total_amount,
             currency,
             user.base_currency,
             receipt_date.date(),
         )
         receipt_hash = sha256(
-            f"manual|{user.id}|{receipt_date.isoformat()}|{amount}|{description}".encode()
+            f"manual|{user.id}|{receipt_date.isoformat()}|{total_amount}|"
+            f"{description or '|'.join(item.name for item in response_items)}".encode()
         ).hexdigest()
         receipt = await self.receipt_repo.create_with_items(
             user_id=user.id,
             store_name="Ручной расход",
             store_inn=None,
             receipt_date=receipt_date,
-            total_amount=amount,
+            total_amount=total_amount,
             currency=currency,
             base_currency=user.base_currency,
             converted_amount=converted_amount,
             exchange_rate=rate,
             ocr_confidence=1.0,
             image_key=None,
-            raw_ocr_json={"source": "manual", "description": description},
+            raw_ocr_json={
+                "source": "manual",
+                "description": description,
+                "items": [item.model_dump(mode="json") for item in response_items],
+            },
             receipt_hash=receipt_hash,
-            items=[
-                {
-                    "name": description,
-                    "normalized_name": normalized_name,
-                    "category_id": category_match.category.id,
-                    "quantity": Decimal("1"),
-                    "unit": "pcs",
-                    "price_per_unit": amount,
-                    "total_price": amount,
-                    "discount": Decimal("0"),
-                    "currency": currency,
-                    "confidence": max(0.95, category_match.confidence),
-                }
-            ],
+            items=items_payload,
         )
         await session.commit()
-        item_payload = ReceiptItemPayload(
-            name=description,
-            normalized_name=normalized_name,
-            quantity=Decimal("1"),
-            unit="pcs",
-            price_per_unit=amount,
-            total_price=amount,
-            discount=Decimal("0"),
-            currency=currency,
-            category_name=category_match.category.name,
-            confidence=max(0.95, category_match.confidence),
-        )
         return ReceiptView(
             id=receipt.id,
             store_name=receipt.store_name,
@@ -119,7 +158,7 @@ class ReceiptProcessingService:
             converted_amount=receipt.converted_amount,
             base_currency=receipt.base_currency,
             ocr_confidence=receipt.ocr_confidence,
-            items=[item_payload],
+            items=response_items,
         )
 
     async def process_upload(
