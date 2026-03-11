@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeyboardMarkup
 
 from app.container import ServiceContainer
 from app.repositories import ReceiptRepository
@@ -20,10 +20,49 @@ class BudgetStates(StatesGroup):
     waiting_period = State()
 
 
+class ManualExpenseStates(StatesGroup):
+    waiting_amount = State()
+    waiting_description = State()
+
+
+def build_main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="Добавить чек"),
+                KeyboardButton(text="Добавить расход"),
+                KeyboardButton(text="Добавить доход"),
+            ],
+            [
+                KeyboardButton(text="История"),
+                KeyboardButton(text="Статистика"),
+                KeyboardButton(text="Бюджет"),
+            ],
+            [
+                KeyboardButton(text="Помощь"),
+                KeyboardButton(text="Отмена"),
+            ],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Выберите действие",
+    )
+
+
 def create_dispatcher(container: ServiceContainer) -> Dispatcher:
     router = Router()
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
+
+    async def answer_with_main_menu(message: Message, text: str) -> None:
+        await message.answer(text, reply_markup=build_main_keyboard())
+
+    async def get_or_create_user(message: Message, session):
+        return await container.user_repo(session).get_or_create(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            language=message.from_user.language_code or container.settings.default_language,
+            currency=container.settings.default_currency,
+        )
 
     async def process_receipt_message(message: Message) -> None:
         if (message.text or "").startswith("/"):
@@ -41,15 +80,9 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         else:
             content = (message.text or "").encode("utf-8")
             filename = "receipt.txt"
-        await message.answer("Обрабатываю чек...")
+        await answer_with_main_menu(message, "Обрабатываю чек...")
         async for session in _session_scope():
-            user_repo = container.user_repo(session)
-            user = await user_repo.get_or_create(
-                telegram_id=message.from_user.id,
-                username=message.from_user.username,
-                language=message.from_user.language_code or container.settings.default_language,
-                currency=container.settings.default_currency,
-            )
+            user = await get_or_create_user(message, session)
             service = container.receipt_service(session)
             try:
                 receipt = await service.process_upload(
@@ -59,101 +92,154 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
                     filename=filename,
                 )
             except DuplicateReceiptError as exc:
-                await message.answer(str(exc))
+                await answer_with_main_menu(message, str(exc))
                 return
             except Exception as exc:
                 await session.rollback()
-                await message.answer(f"Не удалось обработать чек: {exc}")
+                await answer_with_main_menu(message, f"Не удалось обработать чек: {exc}")
                 return
         lines = [
             f"{item.name} -> {item.category_name}: {item.total_price} {item.currency}"
             for item in receipt.items[:10]
         ]
-        await message.answer(
+        await answer_with_main_menu(
+            message,
             f"Чек сохранен.\n"
             f"{receipt.store_name}\n"
             f"{receipt.converted_amount} {receipt.base_currency}\n"
             f"OCR confidence: {receipt.ocr_confidence:.0%}\n"
-            + ("\n".join(lines) if lines else "Позиции не распознаны.")
+            + ("\n".join(lines) if lines else "Позиции не распознаны."),
         )
 
     @router.message(Command("start"))
     async def start(message: Message) -> None:
-        await message.answer(
-            "ReceiptBot готов к работе.\n"
-            "Отправьте фото или текст чека, затем используйте /stats, /history, /budget, /currency."
+        await answer_with_main_menu(
+            message,
+            "Учет расходов готов.\n"
+            "Отправьте фото чека или выберите действие на клавиатуре ниже.\n"
+            "Я умею сохранять чеки, добавлять расход вручную, показывать историю и сводку.",
         )
 
     @router.message(Command("help"))
     async def help_command(message: Message) -> None:
-        await message.answer(
-            "/start - регистрация\n"
-            "/stats [week|month] - сводка расходов\n"
-            "/history - последние чеки\n"
-            "/budget - установить лимит\n"
-            "/currency USD - базовая валюта\n"
-            "/mydata - экспорт ваших данных\n"
-            "/deleteaccount - удалить все данные"
+        await answer_with_main_menu(
+            message,
+            "Основные действия:\n"
+            "Добавить чек - фото, документ или текст чека\n"
+            "Добавить расход - ручной ввод суммы и описания\n"
+            "Статистика - сводка расходов за месяц\n"
+            "История - последние чеки и ручные расходы\n"
+            "Бюджет - установка лимита\n\n"
+            "Команды:\n"
+            "/stats [week|month]\n"
+            "/history\n"
+            "/budget\n"
+            "/currency USD\n"
+            "/mydata\n"
+            "/deleteaccount\n"
+            "/cancel",
         )
 
     @router.message(Command("cancel"))
     async def cancel(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await message.answer("Текущее действие отменено.")
+        await answer_with_main_menu(message, "Текущее действие отменено.")
 
     @router.message(Command("currency"))
     async def currency(message: Message) -> None:
         parts = (message.text or "").split(maxsplit=1)
         if len(parts) < 2:
-            await message.answer("Укажите валюту: /currency UAH")
+            await answer_with_main_menu(message, "Укажите валюту: /currency UAH")
             return
         code = parts[1].strip().upper()
         async for session in _session_scope():
-            user_repo = container.user_repo(session)
-            user = await user_repo.get_or_create(
-                telegram_id=message.from_user.id,
-                username=message.from_user.username,
-                language=message.from_user.language_code or container.settings.default_language,
-                currency=container.settings.default_currency,
-            )
+            user = await get_or_create_user(message, session)
             user.base_currency = code
             await session.commit()
-        await message.answer(f"Базовая валюта изменена на {code}.")
+        await answer_with_main_menu(message, f"Базовая валюта изменена на {code}.")
+
+    @router.message(F.text == "Помощь")
+    async def help_button(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await help_command(message)
+
+    @router.message(F.text == "Отмена")
+    async def cancel_button(message: Message, state: FSMContext) -> None:
+        await cancel(message, state)
+
+    @router.message(F.text == "Добавить чек")
+    async def add_receipt_button(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await answer_with_main_menu(
+            message,
+            "Отправьте фото, документ или текст чека. Я попробую распознать сумму и позиции.",
+        )
+
+    @router.message(F.text == "Добавить расход")
+    async def add_expense_button(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await state.set_state(ManualExpenseStates.waiting_amount)
+        await answer_with_main_menu(
+            message,
+            "Введите сумму расхода, например `245.90`.",
+        )
+
+    @router.message(F.text == "Добавить доход")
+    async def add_income_button(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await answer_with_main_menu(
+            message,
+            "Доходы добавим отдельным этапом. Сейчас бот сохраняет чеки и ручные расходы, "
+            "чтобы не смешивать доходы с расходной аналитикой.",
+        )
+
+    @router.message(F.text == "Статистика")
+    async def stats_button(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await stats(message)
+
+    @router.message(F.text == "История")
+    async def history_button(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await history(message)
+
+    @router.message(F.text == "Бюджет")
+    async def budget_button(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await budget(message, state)
 
     @router.message(Command("budget"))
     async def budget(message: Message, state: FSMContext) -> None:
         await state.set_state(BudgetStates.waiting_amount)
-        await message.answer("Введите сумму бюджета, например `8000`.", parse_mode="Markdown")
+        await message.answer(
+            "Введите сумму бюджета, например `8000`.",
+            parse_mode="Markdown",
+            reply_markup=build_main_keyboard(),
+        )
 
     @router.message(BudgetStates.waiting_amount, F.text & ~F.text.startswith("/"))
     async def budget_amount(message: Message, state: FSMContext) -> None:
         try:
             amount = Decimal((message.text or "").replace(",", "."))
         except Exception:
-            await message.answer("Не удалось распознать сумму.")
+            await answer_with_main_menu(message, "Не удалось распознать сумму.")
             return
         await state.update_data(amount=str(amount))
         await state.set_state(BudgetStates.waiting_period)
-        await message.answer("Введите период: WEEK или MONTH.")
+        await answer_with_main_menu(message, "Введите период: WEEK или MONTH.")
 
     @router.message(BudgetStates.waiting_period, F.text & ~F.text.startswith("/"))
     async def budget_period(message: Message, state: FSMContext) -> None:
         period = (message.text or "").strip().upper()
         if period not in {"WEEK", "MONTH"}:
-            await message.answer("Допустимые значения: WEEK или MONTH.")
+            await answer_with_main_menu(message, "Допустимые значения: WEEK или MONTH.")
             return
         data = await state.get_data()
         amount = Decimal(data["amount"])
         starts_at, ends_at = BudgetService.period_bounds(period)
         async for session in _session_scope():
-            user_repo = container.user_repo(session)
             budget_repo = container.budget_repo(session)
-            user = await user_repo.get_or_create(
-                telegram_id=message.from_user.id,
-                username=message.from_user.username,
-                language=message.from_user.language_code or container.settings.default_language,
-                currency=container.settings.default_currency,
-            )
+            user = await get_or_create_user(message, session)
             await budget_repo.create(
                 user_id=user.id,
                 period=period,
@@ -163,14 +249,70 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             )
             await session.commit()
         await state.clear()
-        await message.answer(
+        await answer_with_main_menu(
+            message,
             f"Бюджет {amount} {container.settings.default_currency} "
-            f"на {period} сохранен."
+            f"на {period} сохранен.",
         )
 
     @router.message(BudgetStates.waiting_amount, F.photo | F.document)
     @router.message(BudgetStates.waiting_period, F.photo | F.document)
     async def budget_media(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await process_receipt_message(message)
+
+    @router.message(ManualExpenseStates.waiting_amount, F.text & ~F.text.startswith("/"))
+    async def manual_expense_amount(message: Message, state: FSMContext) -> None:
+        try:
+            amount = Decimal((message.text or "").replace(",", "."))
+        except Exception:
+            await answer_with_main_menu(message, "Не удалось распознать сумму. Пример: 245.90")
+            return
+        if amount <= 0:
+            await answer_with_main_menu(message, "Сумма расхода должна быть больше нуля.")
+            return
+        await state.update_data(amount=str(amount))
+        await state.set_state(ManualExpenseStates.waiting_description)
+        await answer_with_main_menu(
+            message,
+            "Теперь введите описание расхода, например `Такси домой` или `Продукты в АТБ`.",
+        )
+
+    @router.message(ManualExpenseStates.waiting_description, F.text & ~F.text.startswith("/"))
+    async def manual_expense_description(message: Message, state: FSMContext) -> None:
+        description = (message.text or "").strip()
+        if len(description) < 2:
+            await answer_with_main_menu(message, "Описание слишком короткое.")
+            return
+        data = await state.get_data()
+        amount = Decimal(data["amount"])
+        async for session in _session_scope():
+            user = await get_or_create_user(message, session)
+            service = container.receipt_service(session)
+            try:
+                receipt = await service.create_manual_expense(
+                    session=session,
+                    user=user,
+                    amount=amount,
+                    description=description,
+                    currency=user.base_currency,
+                )
+            except Exception as exc:
+                await session.rollback()
+                await answer_with_main_menu(message, f"Не удалось сохранить расход: {exc}")
+                return
+        await state.clear()
+        item = receipt.items[0]
+        await answer_with_main_menu(
+            message,
+            f"Расход сохранен.\n"
+            f"{receipt.converted_amount} {receipt.base_currency}\n"
+            f"{item.name} -> {item.category_name}",
+        )
+
+    @router.message(ManualExpenseStates.waiting_amount, F.photo | F.document)
+    @router.message(ManualExpenseStates.waiting_description, F.photo | F.document)
+    async def manual_expense_media(message: Message, state: FSMContext) -> None:
         await state.clear()
         await process_receipt_message(message)
 
@@ -181,7 +323,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         async for session in _session_scope():
             user = await container.user_repo(session).by_telegram_id(message.from_user.id)
             if user is None:
-                await message.answer("Сначала отправьте чек или выполните /start.")
+                await answer_with_main_menu(message, "Сначала отправьте чек или выполните /start.")
                 return
             starts_at, ends_at = AnalyticsService.parse_period(period)
             receipts = await ReceiptRepository(session).list_for_period(user.id, starts_at, ends_at)
@@ -190,11 +332,12 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             f"{item.category}: {item.total} ({item.percentage:.1f}%)"
             for item in summary.by_category[:5]
         ]
-        await message.answer(
+        await answer_with_main_menu(
+            message,
             f"Период: {period}\n"
             f"Чеков: {summary.receipt_count}\n"
             f"Сумма: {summary.total_amount} {user.base_currency}\n"
-            + ("\n".join(category_lines) if category_lines else "Категории пока отсутствуют.")
+            + ("\n".join(category_lines) if category_lines else "Категории пока отсутствуют."),
         )
 
     @router.message(Command("history"))
@@ -202,25 +345,25 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         async for session in _session_scope():
             user = await container.user_repo(session).by_telegram_id(message.from_user.id)
             if user is None:
-                await message.answer("История пока пуста.")
+                await answer_with_main_menu(message, "История пока пуста.")
                 return
             receipts = await ReceiptRepository(session).latest_for_user(user.id)
         if not receipts:
-            await message.answer("История пока пуста.")
+            await answer_with_main_menu(message, "История пока пуста.")
             return
         lines = [
             f"{receipt.receipt_date:%d.%m.%Y} | {receipt.store_name} | "
             f"{receipt.converted_amount} {receipt.base_currency}"
             for receipt in receipts
         ]
-        await message.answer("\n".join(lines))
+        await answer_with_main_menu(message, "\n".join(lines))
 
     @router.message(Command("mydata"))
     async def mydata(message: Message) -> None:
         async for session in _session_scope():
             user = await container.user_repo(session).by_telegram_id(message.from_user.id)
             if user is None:
-                await message.answer("Данных для экспорта нет.")
+                await answer_with_main_menu(message, "Данных для экспорта нет.")
                 return
             receipts = await ReceiptRepository(session).latest_for_user(user.id, limit=1000)
             csv_payload = container.analytics.export_csv(receipts)
@@ -233,11 +376,11 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             repo = container.user_repo(session)
             user = await repo.by_telegram_id(message.from_user.id)
             if user is None:
-                await message.answer("Аккаунт не найден.")
+                await answer_with_main_menu(message, "Аккаунт не найден.")
                 return
             await repo.delete(user)
             await session.commit()
-        await message.answer("Все данные удалены.")
+        await answer_with_main_menu(message, "Все данные удалены.")
 
     @router.message(F.photo | F.document | F.text)
     async def handle_receipt(message: Message) -> None:
