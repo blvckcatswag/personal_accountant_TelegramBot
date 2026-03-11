@@ -138,6 +138,7 @@ celerybeat.pid
 # Environments
 .env
 .env.*
+AGENTS.md
 gcloud_key.json
 .envrc
 .venv
