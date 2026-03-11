@@ -68,7 +68,10 @@ class ServiceContainer:
             else S3StorageService(self.settings)
         )
         if self.settings.ocr_engine == "google_vision":
-            ocr_engine = GoogleVisionOCREngine(self.settings.google_application_credentials or None)
+            ocr_engine = GoogleVisionOCREngine(
+                credentials_file=self.settings.google_application_credentials or None,
+                credentials_json=self.settings.google_service_account_json or None,
+            )
         else:
             ocr_engine = MockOCREngine()
         return ReceiptProcessingService(

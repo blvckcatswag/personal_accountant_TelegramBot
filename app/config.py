@@ -41,6 +41,7 @@ class Settings(BaseSettings):
 
     google_vision_api_key: str = ""
     google_application_credentials: str = ""
+    google_service_account_json: str = ""
     exchangerate_api_key: str = ""
     openai_api_key: str = ""
     ocr_engine: str = "mock"
