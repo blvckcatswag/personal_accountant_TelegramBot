@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import re
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
@@ -10,6 +11,7 @@ from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeybo
 
 from app.container import ServiceContainer
 from app.repositories import ReceiptRepository
+from app.schemas import ReceiptItemPayload
 from app.services.analytics import AnalyticsService
 from app.services.budgets import BudgetService
 from app.services.receipts import DuplicateReceiptError
@@ -23,6 +25,15 @@ class BudgetStates(StatesGroup):
 class ManualExpenseStates(StatesGroup):
     waiting_amount = State()
     waiting_description = State()
+
+
+MANUAL_AMOUNT_ONLY_PATTERN = re.compile(r"^\d+(?:[.,]\d{1,2})?$")
+MANUAL_ITEM_PATTERN = re.compile(
+    r"^(?P<name>.+?)[\s:=-]+(?P<amount>\d+(?:[.,]\d{1,2})?)\s*"
+    r"(?P<currency>грн|uah|usd|eur|pln|rub|₴|\$|€)?$",
+    re.IGNORECASE,
+)
+MANUAL_TOTAL_KEYWORDS = ("итого", "всего", "разом", "сума", "сумма", "всього", "до сплати")
 
 
 def build_main_keyboard() -> ReplyKeyboardMarkup:
@@ -63,6 +74,47 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             language=message.from_user.language_code or container.settings.default_language,
             currency=container.settings.default_currency,
         )
+
+    def parse_manual_expense_items(
+        text: str,
+        currency: str,
+    ) -> tuple[list[ReceiptItemPayload], Decimal | None]:
+        items: list[ReceiptItemPayload] = []
+        total_hint: Decimal | None = None
+        fragments = [
+            fragment.strip()
+            for fragment in re.split(r"[\n,;]+", text)
+            if fragment.strip()
+        ]
+        for fragment in fragments:
+            match = MANUAL_ITEM_PATTERN.match(fragment)
+            if not match:
+                continue
+            amount = Decimal(match.group("amount").replace(",", "."))
+            if amount <= 0:
+                continue
+            name = match.group("name").strip(" -:=.")
+            normalized_name = re.sub(r"\s+", " ", name).strip().lower()
+            if len(normalized_name) < 2:
+                continue
+            if any(keyword in normalized_name for keyword in MANUAL_TOTAL_KEYWORDS):
+                total_hint = amount
+                continue
+            items.append(
+                ReceiptItemPayload(
+                    name=name,
+                    normalized_name=normalized_name,
+                    quantity=Decimal("1"),
+                    unit="pcs",
+                    price_per_unit=amount,
+                    total_price=amount,
+                    discount=Decimal("0"),
+                    currency=currency,
+                    category_name="Прочее",
+                    confidence=0.95,
+                )
+            )
+        return items, total_hint
 
     async def process_receipt_message(message: Message) -> None:
         if (message.text or "").startswith("/"):
@@ -181,7 +233,9 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         await state.set_state(ManualExpenseStates.waiting_amount)
         await answer_with_main_menu(
             message,
-            "Введите сумму расхода, например `245.90`.",
+            "Введите сумму расхода, например `245.90`,\n"
+            "или сразу пришлите список позиций:\n"
+            "`Молоко - 80`\n`Хлеб - 25`",
         )
 
     @router.message(F.text == "Добавить доход")
@@ -263,10 +317,51 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
 
     @router.message(ManualExpenseStates.waiting_amount, F.text & ~F.text.startswith("/"))
     async def manual_expense_amount(message: Message, state: FSMContext) -> None:
+        raw_text = (message.text or "").strip()
+        if not MANUAL_AMOUNT_ONLY_PATTERN.match(raw_text):
+            async for session in _session_scope():
+                user = await get_or_create_user(message, session)
+                items, total_hint = parse_manual_expense_items(raw_text, user.base_currency)
+                if not items:
+                    break
+                service = container.receipt_service(session)
+                try:
+                    total_amount = total_hint or sum(
+                        (item.total_price for item in items),
+                        Decimal("0"),
+                    )
+                    receipt = await service.create_manual_expense(
+                        session=session,
+                        user=user,
+                        amount=total_amount,
+                        description="; ".join(item.name for item in items),
+                        currency=user.base_currency,
+                        items=items,
+                    )
+                except Exception as exc:
+                    await session.rollback()
+                    await answer_with_main_menu(message, f"Не удалось сохранить расход: {exc}")
+                    return
+            if items:
+                await state.clear()
+                preview = [
+                    f"{item.name} -> {item.category_name}: {item.total_price} {item.currency}"
+                    for item in receipt.items[:5]
+                ]
+                await answer_with_main_menu(
+                    message,
+                    f"Расход сохранен.\n"
+                    f"{receipt.converted_amount} {receipt.base_currency}\n"
+                    + "\n".join(preview),
+                )
+                return
         try:
-            amount = Decimal((message.text or "").replace(",", "."))
+            amount = Decimal(raw_text.replace(",", "."))
         except Exception:
-            await answer_with_main_menu(message, "Не удалось распознать сумму. Пример: 245.90")
+            await answer_with_main_menu(
+                message,
+                "Не удалось распознать сумму. Пример: `245.90` или `Молоко - 80`.",
+            )
             return
         if amount <= 0:
             await answer_with_main_menu(message, "Сумма расхода должна быть больше нуля.")
@@ -315,6 +410,17 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
     async def manual_expense_media(message: Message, state: FSMContext) -> None:
         await state.clear()
         await process_receipt_message(message)
+
+    @router.message(ManualExpenseStates.waiting_amount, F.voice)
+    @router.message(ManualExpenseStates.waiting_description, F.voice)
+    @router.message(F.voice)
+    async def voice_message(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await answer_with_main_menu(
+            message,
+            "Голосовые сообщения пока не поддерживаются. "
+            "Пришлите текст списком или фото чека.",
+        )
 
     @router.message(Command("stats"))
     async def stats(message: Message) -> None:

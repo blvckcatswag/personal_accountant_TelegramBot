@@ -55,8 +55,9 @@ class FakeReceiptService:
         session,
         user,
         amount,
-        description: str,
+        description: str | None,
         currency: str,
+        items=None,
     ):
         self.manual_calls.append(
             {
@@ -65,21 +66,23 @@ class FakeReceiptService:
                 "amount": amount,
                 "description": description,
                 "currency": currency,
+                "items": items,
             }
         )
+        response_items = items or [
+            SimpleNamespace(
+                name=description,
+                category_name="Транспорт",
+                total_price=amount,
+                currency=currency,
+            )
+        ]
         return SimpleNamespace(
             store_name="Ручной расход",
             converted_amount=amount,
             base_currency=currency,
             ocr_confidence=1.0,
-            items=[
-                SimpleNamespace(
-                    name=description,
-                    category_name="Транспорт",
-                    total_price=amount,
-                    currency=currency,
-                )
-            ],
+            items=response_items,
         )
 
 
@@ -331,3 +334,64 @@ async def test_manual_expense_button_sets_state(monkeypatch: pytest.MonkeyPatch)
 
     state = await dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
     assert await state.get_state() == ManualExpenseStates.waiting_amount.state
+
+
+@pytest.mark.asyncio
+async def test_manual_expense_multiline_input_saves_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    receipt_service = FakeReceiptService()
+    dispatcher = create_dispatcher(FakeContainer(receipt_service))
+    bot = Bot("42:TEST")
+    requests: list[SendMessage] = []
+
+    async def fake_call(self, request, **kwargs):
+        if isinstance(request, SendMessage):
+            requests.append(request)
+        return None
+
+    monkeypatch.setattr(Bot, "__call__", fake_call)
+    monkeypatch.setattr(db, "SessionLocal", lambda: FakeSession())
+
+    updates = [
+        {
+            "update_id": 7,
+            "message": {
+                "message_id": 16,
+                "date": 1773201606,
+                "chat": {"id": 100, "type": "private"},
+                "from": {
+                    "id": 100,
+                    "is_bot": False,
+                    "first_name": "User",
+                    "language_code": "ru",
+                },
+                "text": "Добавить расход",
+            },
+        },
+        {
+            "update_id": 8,
+            "message": {
+                "message_id": 17,
+                "date": 1773201607,
+                "chat": {"id": 100, "type": "private"},
+                "from": {
+                    "id": 100,
+                    "is_bot": False,
+                    "first_name": "User",
+                    "language_code": "ru",
+                },
+                "text": "Молоко - 80\nХлеб - 25",
+            },
+        },
+    ]
+
+    for payload in updates:
+        update = Update.model_validate(payload, context={"bot": bot})
+        await dispatcher.feed_update(bot, update)
+
+    state = await dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
+
+    assert await state.get_state() is None
+    assert [call["amount"] for call in receipt_service.manual_calls] == [Decimal("105")]
+    assert receipt_service.manual_calls[0]["items"] is not None
+    assert [item.name for item in receipt_service.manual_calls[0]["items"]] == ["Молоко", "Хлеб"]
+    assert any("Расход сохранен." in request.text for request in requests)
