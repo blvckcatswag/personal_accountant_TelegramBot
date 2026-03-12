@@ -57,18 +57,24 @@ MANUAL_ITEM_PATTERN = re.compile(
 )
 MANUAL_TOTAL_KEYWORDS = ("итого", "всего", "разом", "сума", "сумма", "всього", "до сплати")
 
+VOICE_CURRENCY_PATTERN = re.compile(
+    r"\b(?:грив[а-я]*|грн|griven[a-z]*|рубл[а-я]+|руб|долларо[а-я]+|евро)\b",
+    re.IGNORECASE,
+)
 VOICE_SPLIT_PATTERN = re.compile(
     r"(\d+(?:[.,]\d{1,2})?)\s+(?=[А-Яа-яІіЇїЄєҐґA-Za-z])",
 )
 
 
 def normalize_voice_text(text: str) -> str:
-    """Insert commas between 'name amount' pairs in continuous speech text.
+    """Clean currency words and insert commas between 'name amount' pairs.
 
-    Converts 'молоко 80 хлеб 30 гречка 70'
-    into     'молоко 80, хлеб 30, гречка 70'
+    Converts 'молоко 40 гривен хлеб 35 гривен гречка 70'
+    into     'молоко 40, хлеб 35, гречка 70'
     """
-    return VOICE_SPLIT_PATTERN.sub(r"\1, ", text)
+    cleaned = VOICE_CURRENCY_PATTERN.sub("", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return VOICE_SPLIT_PATTERN.sub(r"\1, ", cleaned)
 
 
 class DbSessionMiddleware(BaseMiddleware):

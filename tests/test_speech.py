@@ -27,3 +27,21 @@ def test_normalize_voice_text_handles_decimals() -> None:
 def test_normalize_voice_text_multiword_names() -> None:
     result = normalize_voice_text("молоко від фермера 80 хліб білий 30")
     assert result == "молоко від фермера 80, хліб білий 30"
+
+
+def test_normalize_voice_text_strips_currency_words() -> None:
+    result = normalize_voice_text(
+        "молоко 40 гривен хлеб 35 гривен мясо 274 гривны "
+        "чипсы 80 гривен сухарики 50 гривен гречка 60 гривен"
+    )
+    assert result == "молоко 40, хлеб 35, мясо 274, чипсы 80, сухарики 50, гречка 60"
+
+
+def test_normalize_voice_text_strips_griven_transliteration() -> None:
+    result = normalize_voice_text("молоко 40 griven хлеб 35 griven")
+    assert result == "молоко 40, хлеб 35"
+
+
+def test_normalize_voice_text_strips_grn() -> None:
+    result = normalize_voice_text("молоко 40 грн хлеб 30 грн")
+    assert result == "молоко 40, хлеб 30"
