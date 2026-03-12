@@ -63,3 +63,40 @@ def test_normalize_voice_text_strips_conjunction_and() -> None:
         "гречка 70 гривен и молоко 55 гривен"
     )
     assert result == "пиво 120, сухарики 80, гречка 70, молоко 55"
+
+
+def test_normalize_voice_text_strips_trailing_period() -> None:
+    """Google STT adds period at end of sentence."""
+    result = normalize_voice_text(
+        "молоко 40 гривен хлеб 35 гривен гречка 60 гривен."
+    )
+    assert result == "молоко 40, хлеб 35, гречка 60"
+
+
+def test_normalize_voice_text_strips_mid_sentence_period() -> None:
+    """Periods after numbers inside text should not break parsing."""
+    result = normalize_voice_text("молоко 40. хлеб 30.")
+    assert result == "молоко 40, хлеб 30"
+
+
+def test_normalize_voice_text_handles_kopecks() -> None:
+    """'X гривен Y копеек' merged into decimal."""
+    result = normalize_voice_text(
+        "молоко 40 гривен 50 копеек хлеб 35 гривен 5 копеек"
+    )
+    assert result == "молоко 40.50, хлеб 35.05"
+
+
+def test_normalize_voice_text_handles_kopecks_abbreviated() -> None:
+    """'X грн Y коп' format."""
+    result = normalize_voice_text("молоко 40 грн 50 коп хлеб 35 грн")
+    assert result == "молоко 40.50, хлеб 35"
+
+
+def test_normalize_voice_text_full_stt_output() -> None:
+    """Realistic Google STT output with commas, currency, trailing period."""
+    result = normalize_voice_text(
+        "Молоко 40 гривен, хлеб 35 гривен, мясо 274 гривны, "
+        "чипсы 80 гривен, сухарики 50 гривен, гречка 60 гривен."
+    )
+    assert result == "Молоко 40, хлеб 35, мясо 274, чипсы 80, сухарики 50, гречка 60"
