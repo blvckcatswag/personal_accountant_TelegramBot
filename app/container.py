@@ -25,6 +25,7 @@ from app.services.currency import (
 )
 from app.services.ocr import GoogleVisionOCREngine, MockOCREngine, ReceiptParser
 from app.services.receipts import ReceiptProcessingService
+from app.services.speech import GoogleSpeechEngine, MockSpeechEngine, SpeechEngine
 from app.services.storage import LocalStorageService, S3StorageService
 
 
@@ -60,6 +61,14 @@ class ServiceContainer:
             StaticRateProvider(),
         ]
         return CurrencyService(CurrencyRateRepository(session), providers)
+
+    def speech_engine(self) -> SpeechEngine:
+        if self.settings.ocr_engine == "google_vision":
+            return GoogleSpeechEngine(
+                credentials_file=self.settings.google_application_credentials or None,
+                credentials_json=self.settings.google_service_account_json or None,
+            )
+        return MockSpeechEngine()
 
     def receipt_service(self, session: AsyncSession) -> ReceiptProcessingService:
         storage = (
