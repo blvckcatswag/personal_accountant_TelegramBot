@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import date
 from decimal import Decimal
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
@@ -125,7 +126,6 @@ def build_main_keyboard() -> ReplyKeyboardMarkup:
             [
                 KeyboardButton(text="Добавить чек"),
                 KeyboardButton(text="Добавить расход"),
-                KeyboardButton(text="Добавить доход"),
             ],
             [
                 KeyboardButton(text="История"),
@@ -275,6 +275,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
     async def receipt_confirm(callback: CallbackQuery, session: AsyncSession) -> None:
         await callback.answer("✅ Отлично!")
         await callback.message.edit_reply_markup(reply_markup=None)
+        await _show_budget_progress(callback.message, session)
 
     @router.callback_query(F.data.startswith("receipt_fix:"))
     async def receipt_fix(
@@ -442,6 +443,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             "📖 Что я умею:\n\n"
             "🧾 Добавить чек — фото, документ или текст\n"
             "✍️ Добавить расход — ручной ввод\n"
+            "🎙️ Голосовое — надиктуй расходы\n"
             "📊 Статистика — сводка за месяц\n"
             "📜 История — последние чеки\n"
             "💳 Бюджет — установка лимита\n\n"
@@ -449,9 +451,9 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             "/stats [week|month]\n"
             "/history\n"
             "/budget\n"
+            "/delete — удалить последний чек\n"
             "/currency USD\n"
-            "/mydata\n"
-            "/deleteaccount\n"
+            "/mydata [week|month] — экспорт CSV\n"
             "/cancel",
         )
 
@@ -506,15 +508,6 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             "✍️ Введите сумму, например `245.90`,\n"
             "или сразу список позиций:\n"
             "`Молоко - 80`\n`Хлеб - 25`",
-        )
-
-    @router.message(F.text == "Добавить доход")
-    async def add_income_button(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        await answer_with_main_menu(
-            message,
-            "🚧 Доходы — в разработке!\n"
-            "Пока бот работает только с расходами.",
         )
 
     @router.message(F.text == "Статистика")
@@ -629,6 +622,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
                     f"💰 {receipt.converted_amount} {receipt.base_currency}\n\n"
                     f"{preview}",
                 )
+                await _show_budget_progress(message, session)
                 return
         try:
             amount = Decimal(raw_text.replace(",", "."))
@@ -686,6 +680,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             f"💰 {receipt.converted_amount} {receipt.base_currency}\n"
             f"📝 {item.name}",
         )
+        await _show_budget_progress(message, session)
 
     @router.message(ManualExpenseStates.waiting_amount, F.photo | F.document)
     @router.message(ManualExpenseStates.waiting_description, F.photo | F.document)
@@ -845,6 +840,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             f"📋 Позиции:\n{preview}",
             reply_markup=build_main_keyboard(),
         )
+        await _show_budget_progress(callback.message, session)
         await state.clear()
 
     @router.callback_query(F.data == "voice_edit")
@@ -884,6 +880,35 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             return
         await _show_voice_preview(message, state, session, recognized_text)
 
+    async def _show_budget_progress(message: Message, session: AsyncSession) -> None:
+        """Show budget progress bar after saving an expense."""
+        user = await container.user_repo(session).by_telegram_id(message.from_user.id)
+        if user is None:
+            return
+        budgets = await container.budget_repo(session).list_active(user.id, date.today())
+        if not budgets:
+            return
+        repo = ReceiptRepository(session)
+        lines: list[str] = []
+        for budget in budgets:
+            starts_at, ends_at = AnalyticsService.parse_period(
+                budget.period.lower() if isinstance(budget.period, str) else budget.period,
+            )
+            receipts = await repo.list_for_period(user.id, starts_at, ends_at)
+            progress = container.budgets.calculate_progress(budget, receipts)
+            label = "📅 Неделя" if budget.period in ("WEEK", "week") else "📅 Месяц"
+            bar = progress.render_bar
+            status = "🔴" if progress.exceeded else "🟢"
+            lines.append(
+                f"{status} {label}: {progress.spent}/{progress.amount} "
+                f"{user.base_currency}\n{bar}",
+            )
+        if lines:
+            await message.answer(
+                "💳 Бюджет:\n\n" + "\n\n".join(lines),
+                reply_markup=build_main_keyboard(),
+            )
+
     @router.message(Command("stats"))
     async def stats(message: Message, session: AsyncSession) -> None:
         parts = (message.text or "").split(maxsplit=1)
@@ -916,14 +941,81 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         if not receipts:
             await answer_with_main_menu(message, "📜 История пока пуста.")
             return
-        lines = [
-            f"📌 {receipt.receipt_date:%d.%m.%Y} — {receipt.store_name} — "
-            f"{receipt.converted_amount} {receipt.base_currency}"
-            for receipt in receipts
-        ]
-        await answer_with_main_menu(
-            message, "📜 Последние чеки:\n\n" + "\n".join(lines),
+        lines: list[str] = []
+        for receipt in receipts:
+            lines.append(
+                f"📌 {receipt.receipt_date:%d.%m.%Y} — {receipt.store_name} — "
+                f"{receipt.converted_amount} {receipt.base_currency}"
+            )
+        delete_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🗑️ Удалить последний",
+                callback_data=f"delete_receipt:{receipts[0].id}",
+            )],
+        ])
+        await message.answer(
+            "📜 Последние чеки:\n\n" + "\n".join(lines),
+            reply_markup=delete_kb,
         )
+
+    @router.callback_query(F.data.startswith("delete_receipt:"))
+    async def delete_receipt_callback(
+        callback: CallbackQuery, session: AsyncSession,
+    ) -> None:
+        receipt_id = callback.data.split(":", 1)[1]
+        user = await container.user_repo(session).by_telegram_id(callback.from_user.id)
+        if user is None:
+            await callback.answer("⚠️ Пользователь не найден.")
+            return
+        repo = ReceiptRepository(session)
+        receipt = await repo.by_id_for_user(receipt_id, user.id)
+        if receipt is None:
+            await callback.answer("⚠️ Чек не найден.")
+            return
+        amount_info = f"{receipt.converted_amount} {receipt.base_currency}"
+        await repo.delete(receipt)
+        await session.commit()
+        await callback.answer("🗑️ Удалено!")
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(
+            f"🗑️ Чек удалён ({amount_info}).",
+            reply_markup=build_main_keyboard(),
+        )
+
+    @router.message(Command("delete"))
+    async def delete_last(message: Message, session: AsyncSession) -> None:
+        user = await container.user_repo(session).by_telegram_id(message.from_user.id)
+        if user is None:
+            await answer_with_main_menu(message, "🤷 Нет данных.")
+            return
+        receipts = await ReceiptRepository(session).latest_for_user(user.id, limit=1)
+        if not receipts:
+            await answer_with_main_menu(message, "📜 Нечего удалять.")
+            return
+        receipt = receipts[0]
+        confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Да, удалить",
+                    callback_data=f"delete_receipt:{receipt.id}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data="delete_cancel",
+                ),
+            ],
+        ])
+        await message.answer(
+            f"🗑️ Удалить последний чек?\n\n"
+            f"📌 {receipt.receipt_date:%d.%m.%Y} — {receipt.store_name}\n"
+            f"💰 {receipt.converted_amount} {receipt.base_currency}",
+            reply_markup=confirm_kb,
+        )
+
+    @router.callback_query(F.data == "delete_cancel")
+    async def delete_cancel_callback(callback: CallbackQuery) -> None:
+        await callback.answer("🚫 Отменено.")
+        await callback.message.edit_reply_markup(reply_markup=None)
 
     @router.message(Command("mydata"))
     async def mydata(message: Message, session: AsyncSession) -> None:
@@ -931,10 +1023,25 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         if user is None:
             await answer_with_main_menu(message, "🤷 Данных для экспорта нет.")
             return
-        receipts = await ReceiptRepository(session).latest_for_user(user.id, limit=1000)
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) > 1:
+            period = parts[1].strip().lower()
+            starts_at, ends_at = AnalyticsService.parse_period(period)
+            receipts = await ReceiptRepository(session).list_for_period(
+                user.id, starts_at, ends_at,
+            )
+            period_label = period
+        else:
+            receipts = await ReceiptRepository(session).latest_for_user(user.id, limit=1000)
+            period_label = "все"
+        if not receipts:
+            await answer_with_main_menu(message, "📜 Нет данных за этот период.")
+            return
         csv_payload = container.analytics.export_csv(receipts)
-        document = BufferedInputFile(csv_payload.encode("utf-8"), filename="mydata.csv")
-        await message.answer_document(document, caption="📦 Ваши данные.")
+        document = BufferedInputFile(
+            csv_payload.encode("utf-8"), filename=f"mydata_{period_label}.csv",
+        )
+        await message.answer_document(document, caption=f"📦 Данные ({period_label}).")
 
     @router.message(Command("deleteaccount"))
     async def delete_account(message: Message, session: AsyncSession) -> None:

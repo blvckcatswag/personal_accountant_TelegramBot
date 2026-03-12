@@ -214,7 +214,6 @@ async def test_start_command_shows_reply_keyboard(monkeypatch: pytest.MonkeyPatc
     assert buttons == [
         "Добавить чек",
         "Добавить расход",
-        "Добавить доход",
         "История",
         "Статистика",
         "Бюджет",
