@@ -78,3 +78,68 @@ def test_receipt_parser_reads_amount_due_from_next_line() -> None:
     receipt = ReceiptParser().parse(raw_text, default_currency="UAH")
 
     assert receipt.total_amount == Decimal("667.00")
+
+
+def test_receipt_parser_handles_two_column_multiline_format() -> None:
+    """Ukrainian receipt: item name + price on one line, qty x unit_price on next."""
+    raw_text = """
+Касір Кассир №2
+Каса 2
+1.000 X 36.00
+Хліб "Бородинський" 0,4кг п
+ол.наріз.                    36.00
+0.612 X 247.00
+Ребро                       151.16
+4 X 22.00
+Плавлений сир Голландський
+Ферма 70г                    88.00
+1 X 39.00
+Банан, кг                    80.03
+1 X 183.00
+Сир нарізка 400г асорт. Mle
+kpol                        183.00
+2.396 X 247.00
+Задок                       591.81
+0.840 X 90.00
+Мандарин                     75.60
+1 X 10.00
+Приправа до Супу (Дари прир
+оди) Ямуна, 25г              10.00
+0.264 X 248.00
+Цукерка глаз. Сливки-Ленівк
+и, кг                        65.47
+0.136 X 250.00
+Цукерки "Джек", кг К         34.00
+0.226 X 196.00
+Круасанчики згущ/молокоLука
+с ф/п                        44.30
+Готівка                    1500.30
+РЕШТА                      -125.00
+СУМА                       1398.37
+00010002024D00C0
+11.03.2026 17:39:04
+    """
+    receipt = ReceiptParser().parse(raw_text, default_currency="UAH")
+
+    assert receipt.total_amount == Decimal("1398.37")
+    assert receipt.receipt_date == datetime(2026, 3, 11, 17, 39, 4)
+
+    item_names = [item.name for item in receipt.items]
+    assert len(receipt.items) >= 10, f"Expected >=10 items, got {len(receipt.items)}: {item_names}"
+
+    # Multi-line names should be joined
+    assert any("Хліб" in name and "наріз" in name for name in item_names), (
+        f"Expected joined bread item, got: {item_names}"
+    )
+    assert any("Плавлений" in name for name in item_names), (
+        f"Expected cheese item, got: {item_names}"
+    )
+
+    # Qty lines should NOT appear as items
+    assert all("X" not in name.split() for name in item_names), (
+        f"Qty lines leaked into items: {item_names}"
+    )
+
+    # Service lines should not be items
+    assert all("СУМА" not in name for name in item_names)
+    assert all("Готівка" not in name for name in item_names)
