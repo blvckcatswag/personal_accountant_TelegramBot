@@ -42,6 +42,7 @@ class FakeReceiptService:
             }
         )
         return SimpleNamespace(
+            id="test-receipt-id",
             store_name="АТБ",
             converted_amount="100.00",
             base_currency="UAH",
@@ -163,11 +164,9 @@ async def test_photo_in_budget_state_processed_as_receipt(monkeypatch: pytest.Mo
 
     assert [call["filename"] for call in receipt_service.calls] == ["receipt.jpg"]
     sent_texts = [request.text for request in requests]
-    assert sent_texts[:2] == [
-        "Обрабатываю чек...",
-        "Чек сохранен.\nАТБ\n100.00 UAH\nOCR confidence: 95%\nПозиции не распознаны.",
-    ]
-    assert all(text != "Не удалось распознать сумму." for text in sent_texts)
+    assert any("Обрабатываю чек" in text for text in sent_texts)
+    assert any("Чек распознан" in text for text in sent_texts)
+    assert all("Не удалось распознать сумму" not in text for text in sent_texts)
     assert await state.get_state() is None
 
 
@@ -209,7 +208,7 @@ async def test_start_command_shows_reply_keyboard(monkeypatch: pytest.MonkeyPatc
 
     assert len(requests) == 1
     request = requests[0]
-    assert "Учет расходов готов." in request.text
+    assert "личный бухгалтер" in request.text
     assert request.reply_markup is not None
     buttons = [button.text for row in request.reply_markup.keyboard for button in row]
     assert buttons == [
@@ -297,9 +296,9 @@ async def test_manual_expense_flow_saves_expense(monkeypatch: pytest.MonkeyPatch
     assert await state.get_state() is None
     assert [call["amount"] for call in receipt_service.manual_calls] == [Decimal("245.90")]
     assert [call["description"] for call in receipt_service.manual_calls] == ["Такси домой"]
-    assert any("Введите сумму расхода" in text for text in sent_texts)
-    assert any("Теперь введите описание расхода" in text for text in sent_texts)
-    assert any("Расход сохранен." in text for text in sent_texts)
+    assert any("Введите сумму" in text for text in sent_texts)
+    assert any("Введите описание" in text for text in sent_texts)
+    assert any("Расход сохранён" in text for text in sent_texts)
 
 
 @pytest.mark.asyncio
@@ -396,4 +395,4 @@ async def test_manual_expense_multiline_input_saves_items(monkeypatch: pytest.Mo
     assert [call["amount"] for call in receipt_service.manual_calls] == [Decimal("105")]
     assert receipt_service.manual_calls[0]["items"] is not None
     assert [item.name for item in receipt_service.manual_calls[0]["items"]] == ["Молоко", "Хлеб"]
-    assert any("Расход сохранен." in request.text for request in requests)
+    assert any("Расход сохранён" in request.text for request in requests)

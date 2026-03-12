@@ -19,8 +19,6 @@ class DuplicateReceiptError(ValueError):
     pass
 
 
-AUTO_CATEGORY_CONFIDENCE_THRESHOLD = 0.8
-
 
 class ReceiptProcessingService:
     def __init__(
@@ -184,19 +182,11 @@ class ReceiptProcessingService:
         )
         items_payload: list[dict] = []
         for item in parsed.items:
-            category_id = None
-            if item.confidence >= AUTO_CATEGORY_CONFIDENCE_THRESHOLD:
-                match = await self.category_service.categorize(
-                    user_id=user.id, normalized_name=item.normalized_name
-                )
-                category_id = match.category.id
-                item.category_name = match.category.name
-                item.confidence = max(item.confidence, match.confidence)
             items_payload.append(
                 {
                     "name": item.name,
                     "normalized_name": item.normalized_name,
-                    "category_id": category_id,
+                    "category_id": None,
                     "quantity": item.quantity,
                     "unit": item.unit,
                     "price_per_unit": item.price_per_unit,
