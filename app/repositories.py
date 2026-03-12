@@ -176,6 +176,10 @@ class ReceiptRepository:
         )
         return result.scalar_one_or_none()
 
+    async def delete(self, receipt: Receipt) -> None:
+        await self.session.delete(receipt)
+        await self.session.flush()
+
     async def list_for_period(
         self,
         user_id: int,
