@@ -8,6 +8,28 @@ from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
+# Common grocery / expense words that Google STT often misrecognizes.
+# Passed as phrase hints to bias recognition toward expected vocabulary.
+PHRASE_HINTS: list[str] = [
+    # Продукты
+    "молоко", "хлеб", "хліб", "мясо", "м'ясо", "гречка", "рис", "масло",
+    "сыр", "сир", "яйца", "яйця", "макароны", "макарони", "картошка",
+    "картопля", "лук", "цибуля", "морковь", "морква", "помидоры", "помідори",
+    "огурцы", "огірки", "капуста", "перец", "банан", "бананы", "банани",
+    "яблоко", "яблоки", "яблука", "апельсин", "мандарин", "виноград",
+    "курица", "курка", "свинина", "говядина", "яловичина", "рыба", "риба",
+    "колбаса", "ковбаса", "сосиски", "сардельки", "ветчина", "шинка",
+    "творог", "сметана", "кефір", "кефир", "йогурт", "вода", "сок", "сік",
+    "чай", "кава", "кофе", "пиво", "вино", "сухарики", "чипсы", "чіпси",
+    "печенье", "печиво", "шоколад", "конфеты", "цукерки", "мороженое",
+    "морозиво", "торт", "батон", "булка",
+    # Быт
+    "порошок", "мыло", "мило", "шампунь", "гель", "зубная паста",
+    "туалетная бумага", "салфетки", "серветки", "губка",
+    # Валюты (чтобы STT не искажал)
+    "гривен", "гривень", "гривна", "гривні", "грн",
+]
+
 
 @dataclass(slots=True)
 class SpeechPayload:
@@ -52,12 +74,14 @@ class GoogleSpeechEngine:
         client = speech.SpeechClient(credentials=credentials)
 
         audio = speech.RecognitionAudio(content=content)
+        speech_context = speech.SpeechContext(phrases=PHRASE_HINTS, boost=15.0)
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.OGG_OPUS,
             sample_rate_hertz=48000,
             language_code=language,
             alternative_language_codes=["uk-UA"],
             enable_automatic_punctuation=True,
+            speech_contexts=[speech_context],
         )
 
         response = client.recognize(config=config, audio=audio)
