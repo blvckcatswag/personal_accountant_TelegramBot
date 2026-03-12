@@ -58,7 +58,11 @@ MANUAL_ITEM_PATTERN = re.compile(
 MANUAL_TOTAL_KEYWORDS = ("итого", "всего", "разом", "сума", "сумма", "всього", "до сплати")
 
 VOICE_CURRENCY_PATTERN = re.compile(
-    r"\b(?:грив[а-я]*|грн|griven[a-z]*|рубл[а-я]+|руб|долларо[а-я]+|евро)\b",
+    r"(?:грив[а-яі]*|грн|griven[a-z]*|рубл[а-я]+|руб|долларо[а-я]+|евро)",
+    re.IGNORECASE,
+)
+VOICE_CONJUNCTION_PATTERN = re.compile(
+    r",?\s+и\s+(?=[А-Яа-яІіЇїЄєҐґA-Za-z])",
     re.IGNORECASE,
 )
 VOICE_SPLIT_PATTERN = re.compile(
@@ -67,12 +71,14 @@ VOICE_SPLIT_PATTERN = re.compile(
 
 
 def normalize_voice_text(text: str) -> str:
-    """Clean currency words and insert commas between 'name amount' pairs.
+    """Clean currency words, conjunctions and split 'name amount' pairs.
 
-    Converts 'молоко 40 гривен хлеб 35 гривен гречка 70'
-    into     'молоко 40, хлеб 35, гречка 70'
+    Converts 'пиво 120грн сухарики 80 грн и молоко 55 грн'
+    into     'пиво 120, сухарики 80, молоко 55'
     """
-    cleaned = VOICE_CURRENCY_PATTERN.sub("", text)
+    cleaned = VOICE_CURRENCY_PATTERN.sub(" ", text)
+    cleaned = VOICE_CONJUNCTION_PATTERN.sub(", ", cleaned)
+    cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return VOICE_SPLIT_PATTERN.sub(r"\1, ", cleaned)
 
