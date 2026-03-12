@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+DEFAULT_CATEGORY_NAME = "Прочее"
+
 
 class UserPlan(StrEnum):
     FREE = "FREE"

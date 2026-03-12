@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.container import ServiceContainer
 from app.db import get_session
 from app.repositories import ReceiptRepository
@@ -13,6 +15,21 @@ from app.services.analytics import AnalyticsService
 
 SESSION_DEP = Depends(get_session)
 PERIOD_QUERY = Query(default="month", pattern="^(week|month)$")
+
+API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(
+    api_key: str | None = Security(API_KEY_HEADER),
+) -> None:
+    settings = get_settings()
+    if not settings.api_secret_key:
+        return
+    if api_key != settings.api_secret_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+AUTH = Depends(verify_api_key)
 
 
 def build_api_router(container: ServiceContainer) -> APIRouter:
@@ -26,6 +43,7 @@ def build_api_router(container: ServiceContainer) -> APIRouter:
     async def list_receipts(
         telegram_id: int,
         session: AsyncSession = SESSION_DEP,
+        _auth: None = AUTH,
     ) -> list[ReceiptView]:
         user = await container.user_repo(session).by_telegram_id(telegram_id)
         if user is None:
@@ -38,6 +56,7 @@ def build_api_router(container: ServiceContainer) -> APIRouter:
         telegram_id: int,
         period: str = PERIOD_QUERY,
         session: AsyncSession = SESSION_DEP,
+        _auth: None = AUTH,
     ) -> AnalyticsSummary:
         user = await container.user_repo(session).by_telegram_id(telegram_id)
         if user is None:
@@ -50,6 +69,7 @@ def build_api_router(container: ServiceContainer) -> APIRouter:
     async def budgets(
         telegram_id: int,
         session: AsyncSession = SESSION_DEP,
+        _auth: None = AUTH,
     ) -> list[BudgetProgress]:
         user = await container.user_repo(session).by_telegram_id(telegram_id)
         if user is None:
@@ -66,6 +86,7 @@ def build_api_router(container: ServiceContainer) -> APIRouter:
     async def mydata(
         telegram_id: int,
         session: AsyncSession = SESSION_DEP,
+        _auth: None = AUTH,
     ) -> MyDataExport:
         user = await container.user_repo(session).by_telegram_id(telegram_id)
         if user is None:

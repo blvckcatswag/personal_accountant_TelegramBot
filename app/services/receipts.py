@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import User
 from app.repositories import ReceiptRepository
-from app.schemas import ReceiptItemPayload, ReceiptView
+from app.schemas import DEFAULT_CATEGORY_NAME, ReceiptItemPayload, ReceiptView
 from app.services.categories import CategoryService
 from app.services.currency import CurrencyService
 from app.services.ocr import OCREngine, ReceiptParser, normalize_item_name
@@ -70,7 +70,7 @@ class ReceiptProcessingService:
                     total_price=amount,
                     discount=Decimal("0"),
                     currency=currency,
-                    category_name="Прочее",
+                    category_name=DEFAULT_CATEGORY_NAME,
                     confidence=0.95,
                 )
             ]
@@ -148,7 +148,6 @@ class ReceiptProcessingService:
             receipt_hash=receipt_hash,
             items=items_payload,
         )
-        await session.commit()
         return ReceiptView(
             id=receipt.id,
             store_name=receipt.store_name,
@@ -223,7 +222,6 @@ class ReceiptProcessingService:
             receipt_hash=parsed.receipt_hash,
             items=items_payload,
         )
-        await session.commit()
         return ReceiptView(
             id=receipt.id,
             store_name=receipt.store_name,
