@@ -44,6 +44,11 @@ class ReceiptConfirmStates(StatesGroup):
     waiting_voice_items = State()
 
 
+class VoiceConfirmStates(StatesGroup):
+    waiting_confirm = State()
+    waiting_edit = State()
+
+
 class ManualExpenseStates(StatesGroup):
     waiting_amount = State()
     waiting_description = State()
@@ -57,6 +62,10 @@ MANUAL_ITEM_PATTERN = re.compile(
 )
 MANUAL_TOTAL_KEYWORDS = ("итого", "всего", "разом", "сума", "сумма", "всього", "до сплати")
 
+VOICE_KOPECK_PATTERN = re.compile(
+    r"(\d+)\s*(?:грив[а-яі]*|грн)\s+(\d{1,2})\s*(?:копе[а-я]*|коп\.?)",
+    re.IGNORECASE,
+)
 VOICE_CURRENCY_PATTERN = re.compile(
     r"(?:грив[а-яі]*|грн|griven[a-z]*|рубл[а-я]+|руб|долларо[а-я]+|евро)",
     re.IGNORECASE,
@@ -75,11 +84,31 @@ def normalize_voice_text(text: str) -> str:
 
     Converts 'пиво 120грн сухарики 80 грн и молоко 55 грн'
     into     'пиво 120, сухарики 80, молоко 55'
+
+    Also handles 'X гривен Y копеек' → 'X.0Y' decimals.
     """
-    cleaned = VOICE_CURRENCY_PATTERN.sub(" ", text)
+    # 1. Strip trailing sentence punctuation (Google STT adds periods)
+    cleaned = text.rstrip(".!?…")
+
+    # 2. Merge "X гривен Y копеек" into decimal before stripping currency
+    cleaned = VOICE_KOPECK_PATTERN.sub(
+        lambda m: f"{m.group(1)}.{m.group(2).zfill(2)}", cleaned,
+    )
+
+    # 3. Strip remaining currency words
+    cleaned = VOICE_CURRENCY_PATTERN.sub(" ", cleaned)
+
+    # 4. Strip conjunctions ("и" between items)
     cleaned = VOICE_CONJUNCTION_PATTERN.sub(", ", cleaned)
+
+    # 5. Remove punctuation stuck to numbers ("274." → "274")
+    cleaned = re.sub(r"(\d)\.(?!\d)", r"\1", cleaned)
+
+    # 6. Normalize commas and whitespace
     cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # 7. Split items: after a number followed by a letter = new item
     return VOICE_SPLIT_PATTERN.sub(r"\1, ", cleaned)
 
 
@@ -666,13 +695,32 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         await state.clear()
         await process_receipt_message(message, session, state)
 
-    @router.message(ManualExpenseStates.waiting_amount, F.voice)
-    @router.message(ManualExpenseStates.waiting_description, F.voice)
-    @router.message(F.voice)
-    async def voice_message(
-        message: Message, state: FSMContext, session: AsyncSession,
-    ) -> None:
-        await state.clear()
+    def _build_voice_preview(
+        recognized_text: str, items: list[ReceiptItemPayload], total: Decimal,
+        currency: str,
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        preview = "\n".join(
+            f"  • {item.name}: {item.total_price} {item.currency}"
+            for item in items[:15]
+        )
+        text = (
+            f"🎙️ Распознано:\n«{recognized_text}»\n\n"
+            f"📋 Позиции:\n{preview}\n\n"
+            f"💰 Итого: {total} {currency}\n\n"
+            "Всё верно?"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Сохранить", callback_data="voice_ok"),
+                InlineKeyboardButton(text="✏️ Исправить", callback_data="voice_edit"),
+            ],
+        ])
+        return text, kb
+
+    async def _recognize_voice(
+        message: Message,
+    ) -> str | None:
+        """Run STT and return recognized text, or None on failure."""
         voice = message.voice
         if voice.duration > 60:
             await answer_with_main_menu(
@@ -680,7 +728,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
                 "⚠️ Голосовое слишком длинное (макс. 60 сек).\n"
                 "Попробуйте короче!",
             )
-            return
+            return None
         await answer_with_main_menu(message, "🎙️ Распознаю голосовое...")
         file = await message.bot.get_file(voice.file_id)
         file_buffer = await message.bot.download_file(file.file_path)
@@ -697,13 +745,19 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             await answer_with_main_menu(
                 message, "❌ Не удалось распознать голосовое. Попробуйте ещё раз.",
             )
-            return
+            return None
         if not speech_result.text.strip():
             await answer_with_main_menu(
                 message, "🤷 Не удалось разобрать речь. Попробуйте сказать чётче.",
             )
-            return
-        recognized_text = speech_result.text.strip()
+            return None
+        return speech_result.text.strip()
+
+    async def _show_voice_preview(
+        message: Message, state: FSMContext, session: AsyncSession,
+        recognized_text: str,
+    ) -> None:
+        """Parse recognized text and show confirmation preview."""
         normalized_text = normalize_voice_text(recognized_text)
         user = await get_or_create_user(message, session)
         items, total_hint = parse_manual_expense_items(
@@ -714,9 +768,50 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
                 message,
                 f"🎙️ Распознано:\n«{recognized_text}»\n\n"
                 "❌ Не удалось разобрать позиции.\n"
-                "Формат: «молоко 80, хлеб 30, гречка 70»",
+                "Попробуйте формат: «молоко 80, хлеб 30, гречка 70»\n"
+                "Или отправьте текст вручную.",
             )
+            await state.set_state(VoiceConfirmStates.waiting_edit)
+            await state.update_data(voice_recognized="")
             return
+        total_amount = total_hint or sum(
+            (item.total_price for item in items), Decimal("0"),
+        )
+        text, kb = _build_voice_preview(
+            recognized_text, items, total_amount, user.base_currency,
+        )
+        await state.set_state(VoiceConfirmStates.waiting_confirm)
+        await state.update_data(
+            voice_recognized=recognized_text,
+            voice_normalized=normalized_text,
+            voice_currency=user.base_currency,
+        )
+        await message.answer(text, reply_markup=kb)
+
+    @router.message(ManualExpenseStates.waiting_amount, F.voice)
+    @router.message(ManualExpenseStates.waiting_description, F.voice)
+    @router.message(F.voice)
+    async def voice_message(
+        message: Message, state: FSMContext, session: AsyncSession,
+    ) -> None:
+        await state.clear()
+        recognized_text = await _recognize_voice(message)
+        if recognized_text is None:
+            return
+        await _show_voice_preview(message, state, session, recognized_text)
+
+    @router.callback_query(F.data == "voice_ok")
+    async def voice_confirm(
+        callback: CallbackQuery, state: FSMContext, session: AsyncSession,
+    ) -> None:
+        data = await state.get_data()
+        normalized_text = data.get("voice_normalized", "")
+        currency = data.get("voice_currency", container.settings.default_currency)
+        items, total_hint = parse_manual_expense_items(normalized_text, currency)
+        if not items:
+            await callback.answer("❌ Нет позиций для сохранения.")
+            return
+        user = await get_or_create_user(callback.message, session)
         service = container.receipt_service(session)
         try:
             total_amount = total_hint or sum(
@@ -727,29 +822,67 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
                 user=user,
                 amount=total_amount,
                 description="; ".join(item.name for item in items),
-                currency=user.base_currency,
+                currency=currency,
                 items=items,
             )
             await session.commit()
         except Exception:
             logger.exception(
-                "Failed to save voice expense for user %s", message.from_user.id,
+                "Failed to save voice expense for user %s", callback.from_user.id,
             )
             await session.rollback()
-            await answer_with_main_menu(
-                message, "❌ Не удалось сохранить. Попробуйте ещё раз.",
-            )
+            await callback.answer("❌ Ошибка сохранения.")
             return
+        await callback.answer("✅ Сохранено!")
+        await callback.message.edit_reply_markup(reply_markup=None)
         preview = "\n".join(
             f"  • {item.name}: {item.total_price} {item.currency}"
             for item in receipt.items[:10]
         )
-        await answer_with_main_menu(
-            message,
-            f"🎙️ Распознано и сохранено!\n\n"
+        await callback.message.answer(
+            f"✅ Расход сохранён!\n\n"
             f"💰 Сумма: {receipt.converted_amount} {receipt.base_currency}\n\n"
             f"📋 Позиции:\n{preview}",
+            reply_markup=build_main_keyboard(),
         )
+        await state.clear()
+
+    @router.callback_query(F.data == "voice_edit")
+    async def voice_edit(
+        callback: CallbackQuery, state: FSMContext,
+    ) -> None:
+        await callback.answer()
+        await callback.message.edit_reply_markup(reply_markup=None)
+        data = await state.get_data()
+        recognized = data.get("voice_recognized", "")
+        await state.set_state(VoiceConfirmStates.waiting_edit)
+        await callback.message.answer(
+            "✏️ Отправьте исправленный текст.\n"
+            "Формат: «молоко 80, хлеб 30, гречка 70»\n\n"
+            f"Текущий текст:\n«{recognized}»",
+            reply_markup=build_main_keyboard(),
+        )
+
+    @router.message(
+        VoiceConfirmStates.waiting_edit, F.text & ~F.text.startswith("/"),
+    )
+    async def voice_edit_text(
+        message: Message, state: FSMContext, session: AsyncSession,
+    ) -> None:
+        corrected_text = (message.text or "").strip()
+        if len(corrected_text) < 3:
+            await answer_with_main_menu(message, "❌ Текст слишком короткий.")
+            return
+        await _show_voice_preview(message, state, session, corrected_text)
+
+    @router.message(VoiceConfirmStates.waiting_edit, F.voice)
+    async def voice_edit_resend(
+        message: Message, state: FSMContext, session: AsyncSession,
+    ) -> None:
+        recognized_text = await _recognize_voice(message)
+        if recognized_text is None:
+            return
+        await _show_voice_preview(message, state, session, recognized_text)
 
     @router.message(Command("stats"))
     async def stats(message: Message, session: AsyncSession) -> None:
