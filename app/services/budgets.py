@@ -49,7 +49,7 @@ class BudgetService:
                 continue
             for item in receipt.items:
                 if item.category_id == budget.category_id:
-                    spent += item.total_price
+                    spent += (item.total_price * receipt.exchange_rate).quantize(Decimal("0.01"))
         percentage = float((spent / budget.amount) * 100) if budget.amount else 0.0
         return BudgetProgress(
             budget_id=budget.id,

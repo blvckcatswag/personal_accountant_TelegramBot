@@ -1,20 +1,33 @@
 from __future__ import annotations
 
-from decimal import Decimal
+import logging
 import re
+from decimal import Decimal
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import (
+    BufferedInputFile,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    TelegramObject,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import db
 from app.container import ServiceContainer
 from app.repositories import ReceiptRepository
-from app.schemas import ReceiptItemPayload
+from app.schemas import DEFAULT_CATEGORY_NAME, ReceiptItemPayload
 from app.services.analytics import AnalyticsService
 from app.services.budgets import BudgetService
 from app.services.receipts import DuplicateReceiptError
+
+logger = logging.getLogger(__name__)
+
+CURRENCY_CODE_PATTERN = re.compile(r"^[A-Z]{3}$")
 
 
 class BudgetStates(StatesGroup):
@@ -34,6 +47,13 @@ MANUAL_ITEM_PATTERN = re.compile(
     re.IGNORECASE,
 )
 MANUAL_TOTAL_KEYWORDS = ("итого", "всего", "разом", "сума", "сумма", "всього", "до сплати")
+
+
+class DbSessionMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        async with db.SessionLocal() as session:
+            data["session"] = session
+            return await handler(event, data)
 
 
 def build_main_keyboard() -> ReplyKeyboardMarkup:
@@ -61,13 +81,14 @@ def build_main_keyboard() -> ReplyKeyboardMarkup:
 
 def create_dispatcher(container: ServiceContainer) -> Dispatcher:
     router = Router()
+    router.message.middleware(DbSessionMiddleware())
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
 
     async def answer_with_main_menu(message: Message, text: str) -> None:
         await message.answer(text, reply_markup=build_main_keyboard())
 
-    async def get_or_create_user(message: Message, session):
+    async def get_or_create_user(message: Message, session: AsyncSession):
         return await container.user_repo(session).get_or_create(
             telegram_id=message.from_user.id,
             username=message.from_user.username,
@@ -110,13 +131,13 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
                     total_price=amount,
                     discount=Decimal("0"),
                     currency=currency,
-                    category_name="Прочее",
+                    category_name=DEFAULT_CATEGORY_NAME,
                     confidence=0.95,
                 )
             )
         return items, total_hint
 
-    async def process_receipt_message(message: Message) -> None:
+    async def process_receipt_message(message: Message, session: AsyncSession) -> None:
         if (message.text or "").startswith("/"):
             return
         if message.photo:
@@ -133,23 +154,26 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
             content = (message.text or "").encode("utf-8")
             filename = "receipt.txt"
         await answer_with_main_menu(message, "Обрабатываю чек...")
-        async for session in _session_scope():
-            user = await get_or_create_user(message, session)
-            service = container.receipt_service(session)
-            try:
-                receipt = await service.process_upload(
-                    session=session,
-                    user=user,
-                    content=content,
-                    filename=filename,
-                )
-            except DuplicateReceiptError as exc:
-                await answer_with_main_menu(message, str(exc))
-                return
-            except Exception as exc:
-                await session.rollback()
-                await answer_with_main_menu(message, f"Не удалось обработать чек: {exc}")
-                return
+        user = await get_or_create_user(message, session)
+        service = container.receipt_service(session)
+        try:
+            receipt = await service.process_upload(
+                session=session,
+                user=user,
+                content=content,
+                filename=filename,
+            )
+            await session.commit()
+        except DuplicateReceiptError as exc:
+            await answer_with_main_menu(message, str(exc))
+            return
+        except Exception:
+            logger.exception("Failed to process receipt for user %s", message.from_user.id)
+            await session.rollback()
+            await answer_with_main_menu(
+                message, "Не удалось обработать чек. Попробуйте ещё раз.",
+            )
+            return
         lines = [
             f"{item.name} -> {item.category_name}: {item.total_price} {item.currency}"
             for item in receipt.items[:10]
@@ -198,16 +222,22 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         await answer_with_main_menu(message, "Текущее действие отменено.")
 
     @router.message(Command("currency"))
-    async def currency(message: Message) -> None:
+    async def currency(message: Message, session: AsyncSession) -> None:
         parts = (message.text or "").split(maxsplit=1)
         if len(parts) < 2:
             await answer_with_main_menu(message, "Укажите валюту: /currency UAH")
             return
         code = parts[1].strip().upper()
-        async for session in _session_scope():
-            user = await get_or_create_user(message, session)
-            user.base_currency = code
-            await session.commit()
+        if not CURRENCY_CODE_PATTERN.match(code):
+            await answer_with_main_menu(
+                message,
+                "Некорректный код валюты. Укажите трёхбуквенный код ISO 4217, "
+                "например: UAH, USD, EUR.",
+            )
+            return
+        user = await get_or_create_user(message, session)
+        user.base_currency = code
+        await session.commit()
         await answer_with_main_menu(message, f"Базовая валюта изменена на {code}.")
 
     @router.message(F.text == "Помощь")
@@ -248,14 +278,14 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         )
 
     @router.message(F.text == "Статистика")
-    async def stats_button(message: Message, state: FSMContext) -> None:
+    async def stats_button(message: Message, state: FSMContext, session: AsyncSession) -> None:
         await state.clear()
-        await stats(message)
+        await stats(message, session)
 
     @router.message(F.text == "История")
-    async def history_button(message: Message, state: FSMContext) -> None:
+    async def history_button(message: Message, state: FSMContext, session: AsyncSession) -> None:
         await state.clear()
-        await history(message)
+        await history(message, session)
 
     @router.message(F.text == "Бюджет")
     async def budget_button(message: Message, state: FSMContext) -> None:
@@ -283,7 +313,7 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         await answer_with_main_menu(message, "Введите период: WEEK или MONTH.")
 
     @router.message(BudgetStates.waiting_period, F.text & ~F.text.startswith("/"))
-    async def budget_period(message: Message, state: FSMContext) -> None:
+    async def budget_period(message: Message, state: FSMContext, session: AsyncSession) -> None:
         period = (message.text or "").strip().upper()
         if period not in {"WEEK", "MONTH"}:
             await answer_with_main_menu(message, "Допустимые значения: WEEK или MONTH.")
@@ -291,17 +321,16 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         data = await state.get_data()
         amount = Decimal(data["amount"])
         starts_at, ends_at = BudgetService.period_bounds(period)
-        async for session in _session_scope():
-            budget_repo = container.budget_repo(session)
-            user = await get_or_create_user(message, session)
-            await budget_repo.create(
-                user_id=user.id,
-                period=period,
-                amount=amount,
-                starts_at=starts_at,
-                ends_at=ends_at,
-            )
-            await session.commit()
+        budget_repo = container.budget_repo(session)
+        user = await get_or_create_user(message, session)
+        await budget_repo.create(
+            user_id=user.id,
+            period=period,
+            amount=amount,
+            starts_at=starts_at,
+            ends_at=ends_at,
+        )
+        await session.commit()
         await state.clear()
         await answer_with_main_menu(
             message,
@@ -311,19 +340,19 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
 
     @router.message(BudgetStates.waiting_amount, F.photo | F.document)
     @router.message(BudgetStates.waiting_period, F.photo | F.document)
-    async def budget_media(message: Message, state: FSMContext) -> None:
+    async def budget_media(message: Message, state: FSMContext, session: AsyncSession) -> None:
         await state.clear()
-        await process_receipt_message(message)
+        await process_receipt_message(message, session)
 
     @router.message(ManualExpenseStates.waiting_amount, F.text & ~F.text.startswith("/"))
-    async def manual_expense_amount(message: Message, state: FSMContext) -> None:
+    async def manual_expense_amount(
+        message: Message, state: FSMContext, session: AsyncSession,
+    ) -> None:
         raw_text = (message.text or "").strip()
         if not MANUAL_AMOUNT_ONLY_PATTERN.match(raw_text):
-            async for session in _session_scope():
-                user = await get_or_create_user(message, session)
-                items, total_hint = parse_manual_expense_items(raw_text, user.base_currency)
-                if not items:
-                    break
+            user = await get_or_create_user(message, session)
+            items, total_hint = parse_manual_expense_items(raw_text, user.base_currency)
+            if items:
                 service = container.receipt_service(session)
                 try:
                     total_amount = total_hint or sum(
@@ -338,11 +367,16 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
                         currency=user.base_currency,
                         items=items,
                     )
-                except Exception as exc:
+                    await session.commit()
+                except Exception:
+                    logger.exception(
+                        "Failed to save manual expense for user %s", message.from_user.id,
+                    )
                     await session.rollback()
-                    await answer_with_main_menu(message, f"Не удалось сохранить расход: {exc}")
+                    await answer_with_main_menu(
+                        message, "Не удалось сохранить расход. Попробуйте ещё раз.",
+                    )
                     return
-            if items:
                 await state.clear()
                 preview = [
                     f"{item.name} -> {item.category_name}: {item.total_price} {item.currency}"
@@ -374,28 +408,35 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         )
 
     @router.message(ManualExpenseStates.waiting_description, F.text & ~F.text.startswith("/"))
-    async def manual_expense_description(message: Message, state: FSMContext) -> None:
+    async def manual_expense_description(
+        message: Message, state: FSMContext, session: AsyncSession,
+    ) -> None:
         description = (message.text or "").strip()
         if len(description) < 2:
             await answer_with_main_menu(message, "Описание слишком короткое.")
             return
         data = await state.get_data()
         amount = Decimal(data["amount"])
-        async for session in _session_scope():
-            user = await get_or_create_user(message, session)
-            service = container.receipt_service(session)
-            try:
-                receipt = await service.create_manual_expense(
-                    session=session,
-                    user=user,
-                    amount=amount,
-                    description=description,
-                    currency=user.base_currency,
-                )
-            except Exception as exc:
-                await session.rollback()
-                await answer_with_main_menu(message, f"Не удалось сохранить расход: {exc}")
-                return
+        user = await get_or_create_user(message, session)
+        service = container.receipt_service(session)
+        try:
+            receipt = await service.create_manual_expense(
+                session=session,
+                user=user,
+                amount=amount,
+                description=description,
+                currency=user.base_currency,
+            )
+            await session.commit()
+        except Exception:
+            logger.exception(
+                "Failed to save manual expense for user %s", message.from_user.id,
+            )
+            await session.rollback()
+            await answer_with_main_menu(
+                message, "Не удалось сохранить расход. Попробуйте ещё раз.",
+            )
+            return
         await state.clear()
         item = receipt.items[0]
         await answer_with_main_menu(
@@ -407,9 +448,11 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
 
     @router.message(ManualExpenseStates.waiting_amount, F.photo | F.document)
     @router.message(ManualExpenseStates.waiting_description, F.photo | F.document)
-    async def manual_expense_media(message: Message, state: FSMContext) -> None:
+    async def manual_expense_media(
+        message: Message, state: FSMContext, session: AsyncSession,
+    ) -> None:
         await state.clear()
-        await process_receipt_message(message)
+        await process_receipt_message(message, session)
 
     @router.message(ManualExpenseStates.waiting_amount, F.voice)
     @router.message(ManualExpenseStates.waiting_description, F.voice)
@@ -423,17 +466,16 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         )
 
     @router.message(Command("stats"))
-    async def stats(message: Message) -> None:
+    async def stats(message: Message, session: AsyncSession) -> None:
         parts = (message.text or "").split(maxsplit=1)
         period = parts[1].strip().lower() if len(parts) > 1 else "month"
-        async for session in _session_scope():
-            user = await container.user_repo(session).by_telegram_id(message.from_user.id)
-            if user is None:
-                await answer_with_main_menu(message, "Сначала отправьте чек или выполните /start.")
-                return
-            starts_at, ends_at = AnalyticsService.parse_period(period)
-            receipts = await ReceiptRepository(session).list_for_period(user.id, starts_at, ends_at)
-            summary = container.analytics.build_summary(receipts)
+        user = await container.user_repo(session).by_telegram_id(message.from_user.id)
+        if user is None:
+            await answer_with_main_menu(message, "Сначала отправьте чек или выполните /start.")
+            return
+        starts_at, ends_at = AnalyticsService.parse_period(period)
+        receipts = await ReceiptRepository(session).list_for_period(user.id, starts_at, ends_at)
+        summary = container.analytics.build_summary(receipts)
         category_lines = [
             f"{item.category}: {item.total} ({item.percentage:.1f}%)"
             for item in summary.by_category[:5]
@@ -447,13 +489,12 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         )
 
     @router.message(Command("history"))
-    async def history(message: Message) -> None:
-        async for session in _session_scope():
-            user = await container.user_repo(session).by_telegram_id(message.from_user.id)
-            if user is None:
-                await answer_with_main_menu(message, "История пока пуста.")
-                return
-            receipts = await ReceiptRepository(session).latest_for_user(user.id)
+    async def history(message: Message, session: AsyncSession) -> None:
+        user = await container.user_repo(session).by_telegram_id(message.from_user.id)
+        if user is None:
+            await answer_with_main_menu(message, "История пока пуста.")
+            return
+        receipts = await ReceiptRepository(session).latest_for_user(user.id)
         if not receipts:
             await answer_with_main_menu(message, "История пока пуста.")
             return
@@ -465,38 +506,30 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
         await answer_with_main_menu(message, "\n".join(lines))
 
     @router.message(Command("mydata"))
-    async def mydata(message: Message) -> None:
-        async for session in _session_scope():
-            user = await container.user_repo(session).by_telegram_id(message.from_user.id)
-            if user is None:
-                await answer_with_main_menu(message, "Данных для экспорта нет.")
-                return
-            receipts = await ReceiptRepository(session).latest_for_user(user.id, limit=1000)
-            csv_payload = container.analytics.export_csv(receipts)
+    async def mydata(message: Message, session: AsyncSession) -> None:
+        user = await container.user_repo(session).by_telegram_id(message.from_user.id)
+        if user is None:
+            await answer_with_main_menu(message, "Данных для экспорта нет.")
+            return
+        receipts = await ReceiptRepository(session).latest_for_user(user.id, limit=1000)
+        csv_payload = container.analytics.export_csv(receipts)
         document = BufferedInputFile(csv_payload.encode("utf-8"), filename="mydata.csv")
         await message.answer_document(document, caption="Экспорт данных пользователя.")
 
     @router.message(Command("deleteaccount"))
-    async def delete_account(message: Message) -> None:
-        async for session in _session_scope():
-            repo = container.user_repo(session)
-            user = await repo.by_telegram_id(message.from_user.id)
-            if user is None:
-                await answer_with_main_menu(message, "Аккаунт не найден.")
-                return
-            await repo.delete(user)
-            await session.commit()
+    async def delete_account(message: Message, session: AsyncSession) -> None:
+        repo = container.user_repo(session)
+        user = await repo.by_telegram_id(message.from_user.id)
+        if user is None:
+            await answer_with_main_menu(message, "Аккаунт не найден.")
+            return
+        await repo.delete(user)
+        await session.commit()
         await answer_with_main_menu(message, "Все данные удалены.")
 
     @router.message(F.photo | F.document | F.text)
-    async def handle_receipt(message: Message) -> None:
-        await process_receipt_message(message)
-
-    async def _session_scope():
-        from app.db import SessionLocal
-
-        async with SessionLocal() as session:
-            yield session
+    async def handle_receipt(message: Message, session: AsyncSession) -> None:
+        await process_receipt_message(message, session)
 
     return dispatcher
 

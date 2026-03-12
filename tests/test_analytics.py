@@ -28,6 +28,7 @@ def test_analytics_summary_aggregates_receipts() -> None:
         converted_amount=Decimal("90"),
         base_currency="UAH",
         ocr_confidence=0.9,
+        exchange_rate=Decimal("1"),
         items=[item],
     )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,7 +10,9 @@ from decimal import Decimal
 from hashlib import sha256
 from typing import Protocol
 
-from app.schemas import ParsedReceipt, ReceiptItemPayload
+from app.schemas import DEFAULT_CATEGORY_NAME, ParsedReceipt, ReceiptItemPayload
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_item_name(value: str) -> str:
@@ -168,6 +171,9 @@ class ReceiptParser:
         store_name = self._parse_store_name(lines)
         store_inn = self._parse_optional(self.INN_PATTERN, lines)
         receipt_date = self._parse_date(lines)
+        if receipt_date is None:
+            logger.warning("Receipt date not found in text, using current time")
+            receipt_date = datetime.utcnow()
         total_amount = self._parse_total(lines)
         items = self._parse_items(lines, default_currency)
         confidence = self._estimate_confidence(lines, items)
@@ -204,7 +210,7 @@ class ReceiptParser:
                 parsed = self._parse_date_value(match.group("value"))
                 if parsed is not None:
                     return parsed
-        return datetime.utcnow()
+        return None
 
     def _parse_date_value(self, value: str) -> datetime | None:
         for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y"):
@@ -263,7 +269,7 @@ class ReceiptParser:
                     total_price=total,
                     discount=Decimal("0"),
                     currency=currency,
-                    category_name="Прочее",
+                    category_name=DEFAULT_CATEGORY_NAME,
                     confidence=0.85,
                 )
             )
@@ -290,7 +296,7 @@ class ReceiptParser:
                     unit="pcs",
                     discount=Decimal("0"),
                     currency=currency,
-                    category_name="Прочее",
+                    category_name=DEFAULT_CATEGORY_NAME,
                     confidence=0.65,
                 )
             )

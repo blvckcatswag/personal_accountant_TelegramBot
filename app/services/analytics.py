@@ -7,7 +7,13 @@ from decimal import Decimal
 from io import StringIO
 from typing import TYPE_CHECKING
 
-from app.schemas import AnalyticsSummary, CategoryBreakdown, ReceiptItemPayload, ReceiptView
+from app.schemas import (
+    DEFAULT_CATEGORY_NAME,
+    AnalyticsSummary,
+    CategoryBreakdown,
+    ReceiptItemPayload,
+    ReceiptView,
+)
 
 if TYPE_CHECKING:
     from app.db import Receipt
@@ -28,8 +34,10 @@ class AnalyticsService:
             by_store_raw[receipt.store_name]["total"] += receipt.converted_amount
             by_store_raw[receipt.store_name]["receipts"] += 1
             for item in receipt.items:
-                category_name = item.category.name if item.category else "Прочее"
-                by_category_raw[category_name] += item.total_price
+                category_name = item.category.name if item.category else DEFAULT_CATEGORY_NAME
+                by_category_raw[category_name] += (
+                    item.total_price * receipt.exchange_rate
+                ).quantize(Decimal("0.01"))
 
         by_category = [
             CategoryBreakdown(
@@ -54,6 +62,7 @@ class AnalyticsService:
     @staticmethod
     def export_csv(receipts: list[Receipt]) -> str:
         buffer = StringIO()
+        buffer.write("\ufeff")
         writer = DictWriter(
             buffer,
             fieldnames=[
@@ -84,7 +93,7 @@ class AnalyticsService:
                         "converted_amount": str(receipt.converted_amount),
                         "base_currency": receipt.base_currency,
                         "item_name": item.name,
-                        "category": item.category.name if item.category else "Прочее",
+                        "category": item.category.name if item.category else DEFAULT_CATEGORY_NAME,
                         "quantity": str(item.quantity),
                         "unit": item.unit,
                         "item_total": str(item.total_price),
@@ -113,7 +122,7 @@ class AnalyticsService:
                     total_price=item.total_price,
                     discount=item.discount,
                     currency=item.currency,
-                    category_name=item.category.name if item.category else "Прочее",
+                    category_name=item.category.name if item.category else DEFAULT_CATEGORY_NAME,
                     confidence=item.confidence,
                 )
                 for item in receipt.items

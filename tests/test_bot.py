@@ -129,7 +129,7 @@ async def test_photo_in_budget_state_processed_as_receipt(monkeypatch: pytest.Mo
     monkeypatch.setattr(Bot, "__call__", fake_call)
     monkeypatch.setattr(db, "SessionLocal", lambda: FakeSession())
 
-    state = await dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
     await state.set_state(BudgetStates.waiting_amount)
 
     update = Update.model_validate(
@@ -183,6 +183,7 @@ async def test_start_command_shows_reply_keyboard(monkeypatch: pytest.MonkeyPatc
         return None
 
     monkeypatch.setattr(Bot, "__call__", fake_call)
+    monkeypatch.setattr(db, "SessionLocal", lambda: FakeSession())
 
     update = Update.model_validate(
         {
@@ -290,7 +291,7 @@ async def test_manual_expense_flow_saves_expense(monkeypatch: pytest.MonkeyPatch
         update = Update.model_validate(payload, context={"bot": bot})
         await dispatcher.feed_update(bot, update)
 
-    state = await dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
     sent_texts = [request.text for request in requests]
 
     assert await state.get_state() is None
@@ -310,6 +311,7 @@ async def test_manual_expense_button_sets_state(monkeypatch: pytest.MonkeyPatch)
         return None
 
     monkeypatch.setattr(Bot, "__call__", fake_call)
+    monkeypatch.setattr(db, "SessionLocal", lambda: FakeSession())
 
     update = Update.model_validate(
         {
@@ -332,7 +334,7 @@ async def test_manual_expense_button_sets_state(monkeypatch: pytest.MonkeyPatch)
 
     await dispatcher.feed_update(bot, update)
 
-    state = await dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
     assert await state.get_state() == ManualExpenseStates.waiting_amount.state
 
 
@@ -388,7 +390,7 @@ async def test_manual_expense_multiline_input_saves_items(monkeypatch: pytest.Mo
         update = Update.model_validate(payload, context={"bot": bot})
         await dispatcher.feed_update(bot, update)
 
-    state = await dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
+    state = dispatcher.fsm.get_context(bot=bot, chat_id=100, user_id=100)
 
     assert await state.get_state() is None
     assert [call["amount"] for call in receipt_service.manual_calls] == [Decimal("105")]

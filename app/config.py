@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     google_service_account_json: str = ""
     exchangerate_api_key: str = ""
     openai_api_key: str = ""
+    api_secret_key: str = ""
     ocr_engine: str = "mock"
     ocr_min_confidence: float = Field(default=0.6, ge=0.0, le=1.0)
 
