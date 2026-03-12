@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from decimal import Decimal
@@ -54,6 +55,19 @@ MANUAL_ITEM_PATTERN = re.compile(
     re.IGNORECASE,
 )
 MANUAL_TOTAL_KEYWORDS = ("итого", "всего", "разом", "сума", "сумма", "всього", "до сплати")
+
+VOICE_SPLIT_PATTERN = re.compile(
+    r"(\d+(?:[.,]\d{1,2})?)\s+(?=[А-Яа-яІіЇїЄєҐґA-Za-z])",
+)
+
+
+def normalize_voice_text(text: str) -> str:
+    """Insert commas between 'name amount' pairs in continuous speech text.
+
+    Converts 'молоко 80 хлеб 30 гречка 70'
+    into     'молоко 80, хлеб 30, гречка 70'
+    """
+    return VOICE_SPLIT_PATTERN.sub(r"\1, ", text)
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -539,12 +553,86 @@ def create_dispatcher(container: ServiceContainer) -> Dispatcher:
     @router.message(ManualExpenseStates.waiting_amount, F.voice)
     @router.message(ManualExpenseStates.waiting_description, F.voice)
     @router.message(F.voice)
-    async def voice_message(message: Message, state: FSMContext) -> None:
+    async def voice_message(
+        message: Message, state: FSMContext, session: AsyncSession,
+    ) -> None:
         await state.clear()
+        voice = message.voice
+        if voice.duration > 60:
+            await answer_with_main_menu(
+                message,
+                "⚠️ Голосовое слишком длинное (макс. 60 сек).\n"
+                "Попробуйте короче!",
+            )
+            return
+        await answer_with_main_menu(message, "🎙️ Распознаю голосовое...")
+        file = await message.bot.get_file(voice.file_id)
+        file_buffer = await message.bot.download_file(file.file_path)
+        content = file_buffer.read()
+        try:
+            speech_engine = container.speech_engine()
+            result = speech_engine.recognize(content)
+            if asyncio.iscoroutine(result):
+                speech_result = await result
+            else:
+                speech_result = result
+        except Exception:
+            logger.exception("STT failed for user %s", message.from_user.id)
+            await answer_with_main_menu(
+                message, "❌ Не удалось распознать голосовое. Попробуйте ещё раз.",
+            )
+            return
+        if not speech_result.text.strip():
+            await answer_with_main_menu(
+                message, "🤷 Не удалось разобрать речь. Попробуйте сказать чётче.",
+            )
+            return
+        recognized_text = speech_result.text.strip()
+        normalized_text = normalize_voice_text(recognized_text)
+        user = await get_or_create_user(message, session)
+        items, total_hint = parse_manual_expense_items(
+            normalized_text, user.base_currency,
+        )
+        if not items:
+            await answer_with_main_menu(
+                message,
+                f"🎙️ Распознано:\n«{recognized_text}»\n\n"
+                "❌ Не удалось разобрать позиции.\n"
+                "Формат: «молоко 80, хлеб 30, гречка 70»",
+            )
+            return
+        service = container.receipt_service(session)
+        try:
+            total_amount = total_hint or sum(
+                (item.total_price for item in items), Decimal("0"),
+            )
+            receipt = await service.create_manual_expense(
+                session=session,
+                user=user,
+                amount=total_amount,
+                description="; ".join(item.name for item in items),
+                currency=user.base_currency,
+                items=items,
+            )
+            await session.commit()
+        except Exception:
+            logger.exception(
+                "Failed to save voice expense for user %s", message.from_user.id,
+            )
+            await session.rollback()
+            await answer_with_main_menu(
+                message, "❌ Не удалось сохранить. Попробуйте ещё раз.",
+            )
+            return
+        preview = "\n".join(
+            f"  • {item.name}: {item.total_price} {item.currency}"
+            for item in receipt.items[:10]
+        )
         await answer_with_main_menu(
             message,
-            "🎙️ Голосовые пока не поддерживаются.\n"
-            "Пришлите текст или фото чека 📸",
+            f"🎙️ Распознано и сохранено!\n\n"
+            f"💰 Сумма: {receipt.converted_amount} {receipt.base_currency}\n\n"
+            f"📋 Позиции:\n{preview}",
         )
 
     @router.message(Command("stats"))

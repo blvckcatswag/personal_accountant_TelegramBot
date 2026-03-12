@@ -19,6 +19,7 @@ dependencies = [
   "asyncpg>=0.30.0",
   "celery[redis]>=5.4.0",
   "fastapi>=0.115.0",
+  "google-cloud-speech>=2.27.0",
   "google-cloud-vision>=3.10.0",
   "httpx>=0.28.0",
   "orjson>=3.10.0",
