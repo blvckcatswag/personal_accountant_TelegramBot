@@ -100,3 +100,17 @@ def test_normalize_voice_text_full_stt_output() -> None:
         "чипсы 80 гривен, сухарики 50 гривен, гречка 60 гривен."
     )
     assert result == "Молоко 40, хлеб 35, мясо 274, чипсы 80, сухарики 50, гречка 60"
+
+
+def test_normalize_voice_text_misplaced_commas() -> None:
+    """Google STT places commas BEFORE numbers instead of after (Bug #1)."""
+    result = normalize_voice_text(
+        "картошка 60 пиво, 78 хлеб 35 молоко, 70 кефир, 64, творог, 46"
+    )
+    assert result == "картошка 60, пиво 78, хлеб 35, молоко 70, кефир 64, творог 46"
+
+
+def test_normalize_voice_text_misplaced_commas_preserves_decimals() -> None:
+    """Commas in decimal numbers (70,50) must not be stripped."""
+    result = normalize_voice_text("молоко 70,50 хлеб 30")
+    assert result == "молоко 70,50, хлеб 30"

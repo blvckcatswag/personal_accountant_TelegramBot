@@ -91,6 +91,11 @@ def normalize_voice_text(text: str) -> str:
     # 1. Strip trailing sentence punctuation (Google STT adds periods)
     cleaned = text.rstrip(".!?…")
 
+    # 1.5. Fix Google STT misplaced commas: ", 78" → " 78"
+    # (STT puts commas before numbers instead of after; require space
+    #  so decimal commas like "70,50" are preserved)
+    cleaned = re.sub(r",\s+(\d)", r" \1", cleaned)
+
     # 2. Merge "X гривен Y копеек" into decimal before stripping currency
     cleaned = VOICE_KOPECK_PATTERN.sub(
         lambda m: f"{m.group(1)}.{m.group(2).zfill(2)}", cleaned,
@@ -105,8 +110,8 @@ def normalize_voice_text(text: str) -> str:
     # 5. Remove punctuation stuck to numbers ("274." → "274")
     cleaned = re.sub(r"(\d)\.(?!\d)", r"\1", cleaned)
 
-    # 6. Normalize commas and whitespace
-    cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
+    # 6. Normalize commas and whitespace (preserve decimal commas like "70,50")
+    cleaned = re.sub(r"(?<!\d)\s*,\s*|\s*,\s+", ", ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
     # 7. Split items: after a number followed by a letter = new item
